@@ -3,6 +3,8 @@
 
 """Upstream protocol adapters plus the Sub2API admin client. POS: worker-only."""
 import json
+import os
+from pathlib import Path
 import re
 import time
 import uuid
@@ -166,6 +168,9 @@ def scope_state(account):
     platform = account.get('platform')
     spec = config.platform_spec(platform)
     if not spec:
+        return 'out'
+    selected = config.get('scope.account_ids')
+    if selected is not None and account.get('id') not in selected:
         return 'out'
     lowered = str(account.get('name') or '').lower()
     for keyword in spec.get('exclude_names') or []:
@@ -351,17 +356,25 @@ def oauth_quota_state(account, now=None):
 
 class Sub2API:
     """Credential reads plus one narrow, worker-only account scheduling write."""
-    def __init__(self, base_url, admin_key):
+    def __init__(self, base_url, admin_key, bearer=False):
         self.base = base_url.rstrip('/')
         self.key = admin_key
+        self.bearer = bearer
+
+    def admin_headers(self):
+        if self.bearer or os.environ.get('DROOL_ADMIN_BEARER_TOKEN'):
+            return {'Authorization': 'Bearer ' + self.key}
+        return {'x-api-key': self.key}
 
     def get(self, path, params=None):
         try:
             with requests.Session() as s:
                 s.trust_env = False
                 r = s.get(self.base + '/api/v1/admin' + path, params=params,
-                          headers={'x-api-key': self.key}, timeout=(12, 45))
+                          headers=self.admin_headers(), timeout=(12, 45), allow_redirects=False)
                 if r.status_code != 200:
+                    if r.status_code == 403 and path == '/accounts/data':
+                        raise ProbeError('ACCOUNT_EXPORT_PROTECTED', '账号导出需要额外授权。请由管理员提供本地凭据文件 SUB2API_ACCOUNT_CREDENTIALS_FILE，不要关闭 Sub2API 二次认证。')
                     raise ProbeError('ACCOUNT_SYNC_HTTP_'+str(r.status_code), '账户配置读取失败（HTTP '+str(r.status_code)+'）')
                 data = r.json()
                 if data.get('code', 0) != 0:
@@ -370,7 +383,7 @@ class Sub2API:
         except (requests.RequestException, ValueError):
             raise ProbeError('ACCOUNT_SYNC_NETWORK', '无法读取 Sub2API 账户配置') from None
 
-    def accounts(self):
+    def accounts(self, all_accounts=False):
         rows = []
         seen = set()
         expected_total = None
@@ -388,9 +401,9 @@ class Sub2API:
                 if type(a.get('id')) is not int or a['id'] in seen or not isinstance(a.get('name'),str):
                     raise ProbeError('ACCOUNT_SYNC_INCOMPLETE','账户标识重复或不完整，未覆盖现有记录')
                 seen.add(a['id'])
-                if scope_state(a) == 'unknown':
+                if not all_accounts and scope_state(a) == 'unknown':
                     raise ProbeError('ACCOUNT_SCOPE_UNKNOWN', '分组信息不完整，未覆盖现有记录')
-                if in_evaluation_scope(a):
+                if all_accounts or in_evaluation_scope(a):
                     rows.append(a)
             if len(seen)==total:
                 return sorted(rows, key=lambda a: a['id'])
@@ -431,7 +444,7 @@ class Sub2API:
                 session.trust_env = False
                 for method, suffix, payload in changes:
                     response = session.request(method,self.base+'/api/v1/admin/accounts/'+str(account_id)+suffix,
-                        headers={'x-api-key':self.key},json=payload,timeout=(12,30),allow_redirects=False)
+                        headers=self.admin_headers(),json=payload,timeout=(12,30),allow_redirects=False)
                     if response.status_code != 200:
                         raise ProbeError('ROUTING_HTTP_'+str(response.status_code), 'Sub2API 调度更新失败')
                     body = response.json()
@@ -448,6 +461,23 @@ class Sub2API:
         a = self.account_state(account_id)
         if not in_evaluation_scope(a):
             raise ProbeError('ACCOUNT_EXCLUDED', '账户已不符合检测范围')
+        local_file = os.environ.get('SUB2API_ACCOUNT_CREDENTIALS_FILE', '')
+        if local_file:
+            try:
+                entry = json.loads(Path(local_file).read_text())[str(int(account_id))]
+                if (entry.get('name') != a['name'] or entry.get('platform') != a['platform'] or
+                        not isinstance(entry.get('credentials'), dict) or not entry['credentials']):
+                    raise ValueError('identity')
+                a['credentials'] = entry['credentials']
+                if entry.get('proxy') is not None:
+                    if not isinstance(entry['proxy'], dict):
+                        raise ValueError('proxy')
+                    a['proxy'] = entry['proxy']
+                elif a.get('proxy_id'):
+                    raise ValueError('proxy missing')
+                return a
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                raise ProbeError('LOCAL_CREDENTIALS_INVALID', '本地凭据文件缺失、账号身份不匹配或缺少代理配置，本次未调用模型。') from None
         bundle = self.get('/accounts/data', {'ids':str(int(account_id)), 'include_proxies':'true'})
         entries = bundle.get('accounts', [])
         if len(entries) != 1 or entries[0].get('name') != a['name'] or entries[0].get('platform') != a['platform']:
@@ -469,7 +499,7 @@ class Sub2API:
         try:
             with requests.Session() as session:
                 session.trust_env = False
-                response = session.get(self.base + endpoint,headers={'x-api-key':self.key},
+                response = session.get(self.base + endpoint,headers=self.admin_headers(),
                     timeout=(12,15),allow_redirects=False)
                 if response.status_code != 200:
                     raise ProbeError('STABILITY_HTTP_'+str(response.status_code),'业务稳定性汇总暂不可用，保留原优先级')
@@ -493,7 +523,7 @@ class Sub2API:
             with requests.Session() as session:
                 session.trust_env = False
                 response = session.put(self.base+'/api/v1/admin/accounts/'+str(account_id),
-                    headers={'x-api-key':self.key},json={'priority':priority},timeout=(12,30),allow_redirects=False)
+                    headers=self.admin_headers(),json={'priority':priority},timeout=(12,30),allow_redirects=False)
                 if response.status_code != 200 or response.json().get('code',0) != 0:
                     raise ProbeError('PRIORITY_REJECTED','优先级更新未确认，等待回读')
         except (requests.RequestException,ValueError):

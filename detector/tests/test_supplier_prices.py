@@ -90,7 +90,8 @@ class API(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.store=Store(self.temp.name);self.store.sync([{'id':1,'name':'fixture','platform':'openai','type':'apikey'}],at('08:00:00'),'fixture');self.store.publish_state()
-        self.server=make_server('127.0.0.1',0,self.temp.name,self.store.public,True)
+        self.token='offline-dashboard-token-123456'
+        self.server=make_server('127.0.0.1',0,self.temp.name,self.store.public,True,access_token=self.token)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
         self.addCleanup(self.stop)
         self.url=f'http://127.0.0.1:{self.server.server_port}'
@@ -99,7 +100,7 @@ class API(unittest.TestCase):
         self.server.shutdown();self.thread.join();self.server.server_close()
 
     def post(self,body,key=KEY,origin=None):
-        request=Request(self.url+'/api/accounts/'+key+'/price',data=json.dumps(body).encode(),headers={'Origin':origin or self.url,'Content-Type':'application/json'})
+        request=Request(self.url+'/api/accounts/'+key+'/price',data=json.dumps(body).encode(),headers={'Origin':origin or self.url,'Content-Type':'application/json','Authorization':'Bearer '+self.token})
         try:
             with urlopen(request) as response:return response.status,json.load(response)
         except HTTPError as response:return response.code,json.load(response)
@@ -109,9 +110,9 @@ class API(unittest.TestCase):
         self.assertEqual(self.post({'config':CONFIG,'expected_revision':'none'})[0],409)
         self.assertEqual(self.post({'multiplier':.2,'expected_multiplier':saved['multiplier']})[0],409)
         with patch('detector.supplier_prices.time.time',return_value=at('07:59:59')):
-            with urlopen(self.url+'/api/state') as response:before=json.load(response)['accounts'][0]['price']
+            with urlopen(Request(self.url+'/api/state',headers={'Authorization':'Bearer '+self.token})) as response:before=json.load(response)['accounts'][0]['price']
         with patch('detector.supplier_prices.time.time',return_value=at('08:00:00')):
-            with urlopen(self.url+'/api/state') as response:after=json.load(response)['accounts'][0]['price']
+            with urlopen(Request(self.url+'/api/state',headers={'Authorization':'Bearer '+self.token})) as response:after=json.load(response)['accounts'][0]['price']
         self.assertEqual((before['multiplier'],after['multiplier']),(.1,.3));self.assertEqual(before['revision'],after['revision'])
 
     def test_validation_and_security(self):

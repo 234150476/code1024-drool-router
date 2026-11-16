@@ -1,0 +1,15 @@
+# Add to the HTTPS server block for your dedicated inspection domain.
+location / {
+    # Embedded host sessions arrive in the initial query, then are removed by JS.
+    access_log off;
+    error_log /var/log/nginx/quality.error.log crit;
+    proxy_pass http://127.0.0.1:4191;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_read_timeout 60s;
+    # The service sets CSP frame-ancestors from its exact origin allowlist.
+    # Do not add X-Frame-Options DENY or SAMEORIGIN in this server block.
+}

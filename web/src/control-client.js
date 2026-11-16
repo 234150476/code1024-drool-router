@@ -4,11 +4,12 @@
 import {priceConfig} from './price-config.js';
 import {tr} from './i18n-core.js';
 import {pauseUrl, priceUrl} from './endpoints.js';
+import {apiFetch} from './access.js';
 
 export const controlLabel = paused => tr(paused ? 'control.resume' : 'control.pause');
 export const controlMessage = paused => tr(paused ? 'toast.paused' : 'toast.resumed');
 
-export async function setMonitorPaused(account, fetcher = fetch) {
+export async function setMonitorPaused(account, fetcher = apiFetch) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -50,7 +51,7 @@ export function mergeMonitorState(current, incoming) {
   })};
 }
 
-export async function setSupplierPrice(account,value,fetcher=fetch) {
+export async function setSupplierPrice(account,value,fetcher=apiFetch) {
   const config=priceConfig(value && typeof value==='object'?value:{mode:'fixed',multiplier:value});
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
   try {

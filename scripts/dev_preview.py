@@ -270,7 +270,7 @@ def main():
     dist = Path(__file__).resolve().parent.parent / 'web' / 'dist'
     if not (dist / 'index.html').exists():
         raise SystemExit('The dashboard has not been built yet: run `cd web && npm ci && npm run build`.')
-    httpd = server.make_server(args.host, args.port, dist, public, True)
+    httpd = server.make_server(args.host, args.port, dist, public, False, demo=True)
     print('preview: http://%s:%d/  (data: %s)' % (args.host, args.port, root), flush=True)
     print('Ctrl+C to stop.', flush=True)
     try:

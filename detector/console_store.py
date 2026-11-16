@@ -1,0 +1,292 @@
+"""Console persistence, scope resolution and immutable task snapshots."""
+from contextlib import contextmanager
+from copy import deepcopy
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import threading
+import time
+import uuid
+
+from . import config
+from .console_config import ConsoleError, defaults, validate_plan, validate_settings
+
+
+def dumps(value):
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+
+class ConsoleStore:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.private = self.root / 'private'
+        self.private.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path = self.private / 'console.sqlite3'
+        self.lock = threading.RLock()
+        with self.db() as db:
+            db.executescript('''
+                CREATE TABLE IF NOT EXISTS console_documents (
+                    key TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS console_plans (
+                    id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS console_jobs (
+                    id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, plan_id TEXT NOT NULL,
+                    status TEXT NOT NULL, source TEXT NOT NULL, actor TEXT NOT NULL,
+                    created_at REAL NOT NULL, started_at REAL, finished_at REAL,
+                    snapshot TEXT NOT NULL, message TEXT);
+                CREATE TABLE IF NOT EXISTS console_results (
+                    id TEXT PRIMARY KEY, job_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+                    account_id INTEGER NOT NULL, group_ids TEXT NOT NULL, slot REAL NOT NULL,
+                    profile TEXT NOT NULL, value TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS console_results_time ON console_results(slot);
+                CREATE INDEX IF NOT EXISTS console_results_plan ON console_results(plan_id,slot);
+                CREATE TABLE IF NOT EXISTS console_audit (
+                    id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
+                    object_id TEXT NOT NULL, created_at REAL NOT NULL);
+            ''')
+            for key, value in [('settings', defaults()), ('inventory', {'accounts': [], 'groups': [], 'synced_at': None}),
+                               ('publication', {'group_names': {}, 'account_names': {}})]:
+                db.execute('INSERT OR IGNORE INTO console_documents VALUES (?,1,?)', (key, dumps(value)))
+            # Migrate existing deployment into a disabled-timer plan, without a paid request.
+            if not db.execute("SELECT 1 FROM console_documents WHERE key='migration_v1'").fetchone():
+                now = time.time()
+                for name, spec in config.enabled_platforms().items():
+                    group_ids = config.evaluation_scope_ids(name)
+                    if not group_ids:
+                        continue
+                    plan = {'name': (spec.get('label') or name) + ' 质量检测', 'enabled': True,
+                            'scope': {'mode': 'groups', 'group_ids': group_ids, 'account_ids': [], 'exclude_ids': []},
+                            'models': defaults()['platforms'], 'kinds': ['candy', 'drawing'],
+                            'schedule': {**defaults()['schedule'], 'enabled': False}, 'published': True,
+                            'public_name': (spec.get('label') or name) + ' 质量检测',
+                            'show_accounts': True, 'show_answers': False, 'show_artifacts': False,
+                            'write_priority': False, 'write_callable': False}
+                    db.execute('INSERT INTO console_plans VALUES (?,1,?,?,?)',
+                               (uuid.uuid4().hex, dumps(plan), now, now))
+                db.execute('INSERT INTO console_documents VALUES (?,?,?)', ('migration_v1', 1, '{}'))
+        os.chmod(self.path, 0o600)
+
+    @contextmanager
+    def db(self):
+        with self.lock:
+            db = sqlite3.connect(self.path, timeout=15)
+            db.row_factory = sqlite3.Row
+            try:
+                with db:
+                    yield db
+            finally:
+                db.close()
+
+    def document(self, key):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM console_documents WHERE key=?', (key,)).fetchone()
+        return {'revision': row['revision'], 'value': json.loads(row['value'])}
+
+    def save_document(self, key, value, revision, actor):
+        if type(revision) is not int or revision < 1:
+            raise ConsoleError('配置版本无效')
+        if key == 'settings':
+            value = validate_settings(value)
+        elif key == 'publication':
+            if not isinstance(value, dict) or set(value) != {'group_names', 'account_names'}:
+                raise ConsoleError('公开名称配置无效')
+            from .console_config import text
+            for names in value.values():
+                if not isinstance(names, dict) or len(names) > 1000:
+                    raise ConsoleError('公开名称数量超出限制')
+                for name_id, name in names.items():
+                    if not name_id.isdigit() or int(name_id) <= 0:
+                        raise ConsoleError('公开名称 ID 无效')
+                    text(name, '公开名称', 80)
+        with self.db() as db:
+            changed = db.execute('UPDATE console_documents SET revision=revision+1,value=? WHERE key=? AND revision=?',
+                                 (dumps(value), key, revision)).rowcount
+            if not changed:
+                raise ConsoleError('配置已被其他操作更新，请刷新后重试', 409)
+            self.audit(db, actor, 'save_' + key, key)
+        return self.document(key)
+
+    @staticmethod
+    def audit(db, actor, action, object_id):
+        db.execute('INSERT INTO console_audit(actor,action,object_id,created_at) VALUES (?,?,?,?)',
+                   (str(actor), action, object_id, time.time()))
+
+    def inventory(self):
+        return self.document('inventory')
+
+    def save_inventory(self, accounts, groups, actor):
+        clean_accounts = []
+        for account in accounts:
+            group_ids = account.get('group_ids')
+            if not isinstance(group_ids, list) or any(type(x) is not int for x in group_ids):
+                raise ConsoleError('账号分组信息不完整，保留原清单', 502)
+            clean_accounts.append({'id': account['id'], 'name': str(account['name'])[:200],
+                                   'platform': str(account.get('platform', ''))[:32],
+                                   'type': str(account.get('type', 'unknown'))[:32],
+                                   'status': str(account.get('status', 'unknown'))[:32],
+                                   'group_ids': sorted(set(group_ids))})
+        if not isinstance(groups, list) or any(type(g.get('id')) is not int for g in groups):
+            raise ConsoleError('网关分组清单不完整，保留原清单', 502)
+        value = {'accounts': clean_accounts,
+                 'groups': [{'id': g['id'], 'name': str(g.get('name', ''))[:120],
+                             'platform': str(g.get('platform', ''))[:32]} for g in groups],
+                 'synced_at': time.time()}
+        with self.db() as db:
+            db.execute("UPDATE console_documents SET value=?,revision=revision+1 WHERE key='inventory'", (dumps(value),))
+            self.audit(db, actor, 'sync_inventory', 'inventory')
+        return self.inventory()
+
+    def plans(self):
+        with self.db() as db:
+            rows = db.execute('SELECT * FROM console_plans ORDER BY created_at').fetchall()
+        return [self.plan_row(r) for r in rows]
+
+    @staticmethod
+    def plan_row(row):
+        return {'id': row['id'], 'revision': row['revision'], 'value': json.loads(row['value']),
+                'updated_at': row['updated_at']}
+
+    def plan(self, ident):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM console_plans WHERE id=?', (ident,)).fetchone()
+        if not row:
+            raise ConsoleError('检测计划不存在', 404)
+        return self.plan_row(row)
+
+    def save_plan(self, value, actor, ident=None, revision=None):
+        value = validate_plan(value)
+        if ident and (type(revision) is not int or revision < 1):
+            raise ConsoleError('计划版本无效')
+        with self.db() as db:
+            if ident:
+                if not db.execute('UPDATE console_plans SET value=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?',
+                                  (dumps(value), time.time(), ident, revision)).rowcount:
+                    raise ConsoleError('计划已被更新，请刷新后重试', 409)
+            else:
+                if db.execute('SELECT count(*) FROM console_plans').fetchone()[0] >= 100:
+                    raise ConsoleError('检测计划最多 100 个')
+                ident = uuid.uuid4().hex
+                db.execute('INSERT INTO console_plans VALUES (?,1,?,?,?)', (ident, dumps(value), time.time(), time.time()))
+            self.audit(db, actor, 'save_plan', ident)
+        return self.plan(ident)
+
+    def resolve(self, plan):
+        settings = self.document('settings')
+        inventory = self.inventory()
+        value = plan['value']
+        scope = value['scope']
+        selected, skipped = [], []
+        found = set()
+        for a in inventory['value']['accounts']:
+            match = (bool(set(scope['group_ids']) & set(a['group_ids'])) if scope['mode'] == 'groups'
+                     else a['id'] in scope['account_ids'])
+            if not match or a['id'] in scope['exclude_ids']:
+                continue
+            found.add(a['id'])
+            model = value['models'].get(a['platform'])
+            if not model or not model['enabled'] or a['status'] not in ('active', 'inactive', 'error'):
+                skipped.append({'id': a['id'], 'reason': '平台模型未启用或账号状态不支持'})
+                continue
+            selected.append(deepcopy(a))
+        if scope['mode'] == 'accounts':
+            skipped.extend({'id': i, 'reason': '账号已移除或清单未同步'} for i in set(scope['account_ids']) - found)
+        if len(selected) > settings['value']['max_accounts']:
+            raise ConsoleError('检测账号数超过每轮上限，请缩小范围')
+        attempts = settings['value']['budgets']['max_attempts']
+        units = (2 if 'candy' in value['kinds'] else 0) + (1 if 'drawing' in value['kinds'] else 0)
+        return {'accounts': selected, 'skipped': skipped, 'account_count': len(selected),
+                'max_requests': len(selected) * attempts * units, 'estimated_cost': None,
+                'inventory_revision': inventory['revision'], 'settings_revision': settings['revision'],
+                'plan_revision': plan['revision'], 'method': 'account-direct'}
+
+    def create_job(self, plan_id, request_key, actor, source, expected):
+        if not isinstance(plan_id, str) or len(plan_id) != 32:
+            raise ConsoleError('无效检测计划')
+        if not isinstance(request_key, str) or not 16 <= len(request_key) <= 100:
+            raise ConsoleError('无效任务幂等标识')
+        with self.db() as db:
+            row = db.execute('SELECT id,plan_id FROM console_jobs WHERE request_key=?', (request_key,)).fetchone()
+            if row:
+                if row['plan_id'] != plan_id:
+                    raise ConsoleError('幂等标识已用于其他计划', 409)
+                return self.job(row['id']), False
+            plan = self.plan(plan_id)
+            if not plan['value']['enabled']:
+                raise ConsoleError('计划已停用')
+            preview = self.resolve(plan)
+            for key in ('plan_revision', 'settings_revision', 'inventory_revision'):
+                if expected.get(key) != preview[key]:
+                    raise ConsoleError('检测范围或配置已变化，请重新预览并确认', 409)
+            if not preview['account_count']:
+                raise ConsoleError('当前范围没有可检测账号，请同步或检查平台模型')
+            if db.execute("SELECT count(*) FROM console_jobs WHERE status IN ('queued','running')").fetchone()[0] >= 20:
+                raise ConsoleError('任务队列已满，请稍后重试', 409)
+            settings = self.document('settings')
+            snapshot = {'plan': plan, 'settings': settings, 'targets': preview['accounts'],
+                        'skipped': preview['skipped'], 'preview': preview}
+            ident = uuid.uuid4().hex
+            db.execute('INSERT INTO console_jobs(id,request_key,plan_id,status,source,actor,created_at,snapshot) VALUES (?,?,?,?,?,?,?,?)',
+                       (ident, request_key, plan_id, 'queued', source, str(actor), time.time(), dumps(snapshot)))
+            self.audit(db, actor, 'create_job', ident)
+        return self.job(ident), True
+
+    def jobs(self):
+        with self.db() as db:
+            rows = db.execute('SELECT * FROM console_jobs ORDER BY created_at DESC LIMIT 200').fetchall()
+        return [self.job_row(row) for row in rows]
+
+    @staticmethod
+    def job_row(row):
+        result = dict(row)
+        result['snapshot'] = json.loads(result['snapshot'])
+        return result
+
+    def job(self, ident):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM console_jobs WHERE id=?', (ident,)).fetchone()
+        if not row:
+            raise ConsoleError('任务不存在', 404)
+        return self.job_row(row)
+
+    def update_job(self, ident, **changes):
+        if set(changes) - {'status', 'started_at', 'finished_at', 'message'}:
+            raise ValueError('INVALID_JOB_UPDATE')
+        with self.db() as db:
+            db.execute('UPDATE console_jobs SET ' + ','.join(k + '=?' for k in changes) + ' WHERE id=?', (*changes.values(), ident))
+
+    def recover_jobs(self):
+        with self.db() as db:
+            db.execute("UPDATE console_jobs SET status='interrupted',finished_at=?,message='服务已重启，任务未自动重发' WHERE status IN ('running','queued')", (time.time(),))
+
+    def import_results(self, job):
+        root = self.private / 'jobs' / job['id']
+        statefile = root / 'private' / 'state.sqlite3'
+        if not statefile.exists():
+            return
+        targets = {a['id']: a for a in job['snapshot']['targets']}
+        with sqlite3.connect('file:' + str(statefile) + '?mode=ro', uri=True) as source:
+            source.row_factory = sqlite3.Row
+            rows = source.execute('SELECT * FROM runs').fetchall()
+        with self.db() as db:
+            for row in rows:
+                if row['account_id'] not in targets:
+                    continue
+                value = {k: row[k] for k in ('id', 'kind', 'status', 'slot', 'duration', 'finished_at', 'model', 'effort', 'platform', 'bank_version', 'attempts', 'answer', 'error_code', 'error')}
+                if value['status'] in ('pending', 'running', 'paused'):
+                    value['status'] = 'cancelled' if (root / 'stop').exists() else 'error'
+                profile = hashlib.sha256(dumps([row['platform'], row['model'], row['effort'], row['kind'], row['bank_version']]).encode()).hexdigest()[:16]
+                db.execute('INSERT OR REPLACE INTO console_results VALUES (?,?,?,?,?,?,?,?)',
+                           (row['id'], job['id'], job['plan_id'], row['account_id'], dumps(targets[row['account_id']]['group_ids']),
+                            row['slot'], profile, dumps(value)))
+
+    def results(self):
+        cutoff = time.time() - self.document('settings')['value']['retention']['artifacts_hours'] * 3600
+        with self.db() as db:
+            rows = db.execute('SELECT * FROM console_results WHERE slot>=? ORDER BY slot DESC', (cutoff,)).fetchall()
+        return [{**dict(r), 'value': json.loads(r['value']), 'group_ids': json.loads(r['group_ids'])} for r in rows]
+
+    def public_id(self, kind, ident):
+        return hashlib.sha256((config.config_salt() + ':console:' + kind + ':' + str(ident)).encode()).hexdigest()[:24]

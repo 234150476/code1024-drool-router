@@ -1,12 +1,14 @@
 {
-  "title": "AI 流口水降智调度",
-  "subtitle": "你的 AI 现在还在流口水吗？",
-  "base_url": "https://your-sub2api-host",
-  "data_dir": "/var/lib/drool-detector",
+  "title": "模型质量巡检",
+  "subtitle": "观察模型表现，保留可复核的证据",
+  "base_url": "",
+  "data_dir": "./data",
   "web": {
     "host": "127.0.0.1",
     "port": 4191,
-    "public_controls": false
+    "public_controls": false,
+    "frame_ancestors": [],
+    "public_origin": ""
   },
   "schedule": {
     "timezone": "Asia/Shanghai",
@@ -14,11 +16,12 @@
     "quiet_start": "04:00",
     "quiet_end": "08:00",
     "quiet_minutes": 90,
-    "history_hours": 24
+    "history_hours": 24,
+    "enabled": false
   },
   "platforms": {
     "openai": {
-      "enabled": true,
+      "enabled": false,
       "label": "GPT",
       "protocol": "openai_responses",
       "model": "gpt-6-astra",
@@ -31,7 +34,7 @@
       ]
     },
     "anthropic": {
-      "enabled": true,
+      "enabled": false,
       "label": "Claude",
       "protocol": "anthropic_messages",
       "model": "claude-opus-5-5",
@@ -41,7 +44,7 @@
       "exclude_names": []
     },
     "gemini": {
-      "enabled": true,
+      "enabled": false,
       "label": "Gemini",
       "protocol": "gemini_generate",
       "model": "gemini-3.8-flash",
@@ -51,7 +54,7 @@
       "exclude_names": []
     },
     "grok": {
-      "enabled": true,
+      "enabled": false,
       "label": "Grok",
       "protocol": "xai_responses",
       "model": "grok-4.7",

@@ -5,6 +5,8 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+ARG DROOL_BASE=/
+ENV DROOL_BASE=$DROOL_BASE
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
@@ -23,8 +25,7 @@ COPY scripts/ ./scripts/
 COPY config.example.json ./
 COPY --from=web /web/dist ./web/dist
 
-# The web and worker processes share one image. Which one runs is decided by the
-# command, and only the worker is given the Sub2API key.
+# Standalone web owns the scheduler and starts isolated worker subprocesses.
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && useradd --system --create-home --shell /usr/sbin/nologin drool \

@@ -3,8 +3,9 @@
 
 import {tr} from './i18n-core.js';
 import {runUrl} from './endpoints.js';
+import {apiFetch} from './access.js';
 
-export async function readRun(id, signal, fetcher = fetch) {
+export async function readRun(id, signal, fetcher = apiFetch) {
   const response = await fetcher(runUrl(id), {method:'GET', signal, cache:'no-store'});
   if (!response.ok) throw Error(response.status === 410 ? tr('error.runExpired') : tr('error.runLoad'));
   const detail = await response.json();

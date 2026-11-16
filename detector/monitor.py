@@ -169,7 +169,7 @@ class Store:
                            (account['id'],redact(account['name'])[:200],now,account_type,platform,spec['model'],spec['effort']))
                 if slot is None or not spec['model'] or self.controls.blocked(public_id(account['id']), slot):
                     continue
-                for kind in PROMPTS:
+                for kind in config.get('tasks.kinds', list(PROMPTS)):
                     question = [select_question(slot),select_question(slot)] if kind=='candy' else []
                     db.execute('INSERT OR IGNORE INTO runs (id,account_id,slot,kind,created_at,source,platform,model,effort,bank_version,question_plan,request_policy) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                                (uuid.uuid4().hex,account['id'],slot,kind,time.time(),source,platform,spec['model'],spec['effort'],VERSION if question else None,json.dumps(question,ensure_ascii=False),policy))
@@ -503,6 +503,8 @@ def quota_message(state):
 
 
 def read_admin_key(key_file):
+    if os.environ.get('DROOL_ADMIN_BEARER_TOKEN'):
+        return os.environ['DROOL_ADMIN_BEARER_TOKEN'].strip()
     if key_file:
         return Path(key_file).read_text().strip()
     return (os.environ.get('SUB2API_ADMIN_KEY') or '').strip()
@@ -611,6 +613,6 @@ if __name__=='__main__':
     args = parser.parse_args()
     if not args.base_url:
         raise SystemExit('缺少 Sub2API 地址：请在 config.json 设置 base_url，或使用 --base-url。')
-    if not args.key_file and not os.environ.get('SUB2API_ADMIN_KEY'):
+    if not args.key_file and not os.environ.get('SUB2API_ADMIN_KEY') and not os.environ.get('DROOL_ADMIN_BEARER_TOKEN'):
         raise SystemExit('缺少 Sub2API 管理员密钥：请设置 SUB2API_ADMIN_KEY，或使用 --key-file 指向密钥文件。')
     raise SystemExit(collect(args.data,args.key_file,args.base_url,args.source,args.metadata_only,args.enable_quality_routing,args.reconcile_quality,args.enable_priority_routing))

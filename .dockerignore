@@ -8,4 +8,9 @@ __pycache__
 *.pyc
 config.json
 .env
+.venv
+.local
+credentials
+artifacts
+deployment
 docs/assets

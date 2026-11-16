@@ -1,43 +1,23 @@
-# Minimal single-host layout. `web` is the only service that needs to be
-# reachable; `worker` and `pricing` hold the Sub2API key.
-#
-#   cp config.example.json config.json   # then edit it
-#   printf 'SUB2API_ADMIN_KEY=...\n' > .env
-#   docker compose up -d
+# See docs/code1024-standalone.md before starting.
 services:
-  web:
+  drool:
     build: .
     command: web
     ports:
       - "127.0.0.1:4191:4191"
-    volumes:
-      - ./config.json:/etc/drool-detector/config.json:ro
-      - drool-data:/data
-    restart: unless-stopped
-
-  worker:
-    build: .
-    command: worker
     environment:
-      SUB2API_ADMIN_KEY: ${SUB2API_ADMIN_KEY:?set SUB2API_ADMIN_KEY in .env}
-      # Enable writes here only after reading the README section on routing.
-      DROOL_ROUTING_WRITE_PRIORITY: "false"
-      DROOL_ROUTING_WRITE_CALLABLE: "false"
+      DROOL_WEB_HOST: "0.0.0.0"
+      DROOL_WEB_TOKEN_FILE: /run/secrets/web-token
+      SUB2API_ADMIN_KEY_FILE: /run/secrets/sub2api-admin
+      # For gateways with protected account export, optionally add:
+      # SUB2API_ACCOUNT_CREDENTIALS_FILE: /run/secrets/accounts.json
     volumes:
       - ./config.json:/etc/drool-detector/config.json:ro
+      - ./credentials:/run/secrets:ro
       - drool-data:/data
-    restart: unless-stopped
-
-  pricing:
-    build: .
-    command: pricing
-    environment:
-      SUB2API_ADMIN_KEY: ${SUB2API_ADMIN_KEY:?set SUB2API_ADMIN_KEY in .env}
-      DROOL_ROUTING_WRITE_PRIORITY: "false"
-      DROOL_ROUTING_WRITE_CALLABLE: "false"
-    volumes:
-      - ./config.json:/etc/drool-detector/config.json:ro
-      - drool-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
     restart: unless-stopped
 
 volumes:

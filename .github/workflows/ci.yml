@@ -56,8 +56,8 @@ jobs:
       - name: Build
         working-directory: web
         run: npm run build
-      - name: The committed online demo must match the current source
-        run: python3 scripts/build_demo.py --check
+      - name: Build the offline demo from current source
+        run: python3 scripts/build_demo.py
       - name: The committed README diagrams must match the generator
         run: python3 scripts/build_docs_assets.py --check
 

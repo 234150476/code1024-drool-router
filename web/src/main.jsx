@@ -7,16 +7,20 @@ import {Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, CheckC
 import {accountCategory, accountPage, answerText, candyAnswers, CATEGORIES, drawingPreview, latest, logicStats, nextSort, questionResult, responseExcerpt, resultLabel, showCandyMeme, SORT_OPTIONS, stageLabel} from './view-model.js';
 import {controlLabel, controlMessage, mergeMonitorState, setMonitorPaused, setSupplierPrice} from './control-client.js';
 import {readRun} from './run-client.js';
-import {artifactUrl, isStaticDemo, stateUrl} from './endpoints.js';
+import {artifactUrl, endpoint, isStaticDemo, stateUrl} from './endpoints.js';
+import {apiFetch} from './access.js';
+import {AccessForm, QualityGuide, ServicePanel, ThemeSwitch} from './workspace.jsx';
 import {LANGUAGES, LanguageProvider, tr, useI18n} from './i18n.js';
 import droolingMeme from './assets/drooling-meme.jpg';
 import './style.css';
+import './workspace.css';
 import CostSummary from './cost-summary.jsx';
 import PriorityView from './priority-view.jsx';
 import DrawingSignals from './drawing-signals.jsx';
 import {schedulerWarning} from './scheduler-warning.js';
+import ConsoleApp from './console.jsx';
 
-const FALLBACK_TITLE = 'AI 流口水降智调度';
+const FALLBACK_TITLE = '模型质量巡检';
 const REPO_URL = 'https://github.com/noonwake-ai/ai-drool-router';
 const statusText = status => tr('status.' + (status || 'empty'));
 const locale = () => document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN';
@@ -71,7 +75,19 @@ function TestRow({kind,rows,selected,onSelect}) {
 }
 
 function ArtFrame({id,large=false,title}) {
-  return <div className={large?'large-frame':'frame-window'}><iframe title={title||tr('art.frame')} src={artifactUrl(id)} sandbox="allow-scripts" referrerPolicy="no-referrer" loading="lazy" tabIndex={large?0:-1}/></div>;
+  const [url,setUrl]=useState(''),[error,setError]=useState(false);
+  useEffect(()=>{
+    if(isStaticDemo()){setUrl(artifactUrl(id));return;}
+    const controller=new AbortController();
+    apiFetch(endpoint('/api/artifact-links/'+id),{signal:controller.signal}).then(async response=>{
+      if(!response.ok)throw Error('artifact');
+      const result=await response.json();
+      if(!result.url?.startsWith('/artifacts/'+id+'.html?'))throw Error('artifact');
+      setUrl(endpoint(result.url));
+    }).catch(error=>{if(error.name!=='AbortError')setError(true);});
+    return()=>controller.abort();
+  },[id]);
+  return <div className={large?'large-frame':'frame-window'}>{url?<iframe title={title||tr('art.frame')} src={url} sandbox="allow-scripts" referrerPolicy="no-referrer" loading="lazy" tabIndex={large?0:-1}/>:<span role="status">{error?'预览加载失败，请刷新重试。':'正在载入预览…'}</span>}</div>;
 }
 
 function CandyPreview({row,onDetail,onDrawing}) {
@@ -164,27 +180,8 @@ function LanguageSwitch() {
   return <div className="lang-switch" role="group" aria-label={tr('app.language')}><Languages size={15} aria-hidden="true"/>{LANGUAGES.map(item=><button key={item.id} type="button" className={language===item.id?'active':''} aria-pressed={language===item.id} title={item.label} onClick={()=>setLanguage(item.id)}>{item.short}</button>)}</div>;
 }
 
-function Hero() {
-  return <section className="hero">
-    <div className="hero-copy">
-      <p className="hero-eyebrow">{tr('app.subtitle')}</p>
-      <h2 className="hero-slogan">{tr('app.slogan')}</h2>
-      <p className="hero-body">{tr('app.hero.body')}</p>
-      <ul className="hero-points">
-        <li><Gauge size={15}/><span>{tr('app.hero.point.scope')}</span></li>
-        <li><ShieldCheck size={15}/><span>{tr('app.hero.point.probe')}</span></li>
-        <li><Activity size={15}/><span>{tr('app.hero.point.control')}</span></li>
-      </ul>
-      <div className="hero-links">
-        <a className="command" href={REPO_URL} target="_blank" rel="noreferrer noopener"><ExternalLink size={15}/>{tr('app.hero.source')}</a>
-        <a className="command ghost" href={`${REPO_URL}#deploy`} target="_blank" rel="noreferrer noopener">{tr('app.hero.deploy')}</a>
-      </div>
-    </div>
-    <div className="hero-art" aria-hidden="true"><Droplets size={120}/></div>
-  </section>;
-}
-
 function App() {
+  const [accessRequired,setAccessRequired]=useState(false),[workspaceTab,setWorkspaceTab]=useState('monitor');
   const [data,setData]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(false),[selection,setSelection]=useState(null),[query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[category,setCategory]=useState('all'),[page,setPage]=useState(1),[tick,setTick]=useState(Date.now());
   const [sort,setSort]=useState({key:'priority',direction:'desc'});
   const mounted=useRef(true),pending=useRef(null);
@@ -192,7 +189,7 @@ function App() {
   const controlRequests=useRef(new Set()),toastSerial=useRef(0);
   const closeToast=useCallback(()=>setToast(null),[]);
   const openDetail=useCallback((id,tab)=>setSelection({id,tab}),[]);
-  const refresh=useCallback(async()=>{if(pending.current)return;const ctl=new AbortController();pending.current=ctl;setLoading(true);try{const r=await fetch(stateUrl(),{signal:ctl.signal,cache:'no-store'});if(!r.ok)throw Error(tr('error.unavailable'));const result=await r.json();if(mounted.current){setData(current=>mergeMonitorState(current,result));setError('');}}catch(e){if(mounted.current&&e.name!=='AbortError')setError(tr('error.stale'));}finally{pending.current=null;if(mounted.current)setLoading(false);}},[]);
+  const refresh=useCallback(async()=>{if(pending.current)return;const ctl=new AbortController();pending.current=ctl;setLoading(true);try{const r=await apiFetch(stateUrl(),{signal:ctl.signal,cache:'no-store'});if(r.status===401){setAccessRequired(true);return false;}if(!r.ok)throw Error(tr('error.unavailable'));const result=await r.json();if(mounted.current){setData(current=>mergeMonitorState(current,result));setError('');setAccessRequired(false);}return true;}catch(e){if(mounted.current&&e.name!=='AbortError')setError(tr('error.stale'));}finally{pending.current=null;if(mounted.current)setLoading(false);}},[]);
   useEffect(()=>{mounted.current=true;refresh();const a=setInterval(()=>{if(!document.hidden)refresh();},30000);const b=setInterval(()=>setTick(Date.now()),1000);return()=>{mounted.current=false;clearInterval(a);clearInterval(b);pending.current?.abort();};},[refresh]);
   const control=useCallback(async account=>{
     if(controlRequests.current.has(account.id))return;
@@ -210,10 +207,12 @@ function App() {
       return updated;
     } catch(error) {if(mounted.current){setToast({id:++toastSerial.current,kind:'error',message:error.message});refresh();}}
   },[refresh]);
+  if(accessRequired)return <AccessForm onAccess={refresh}/>;
   if(!data)return <main className="boot"><Droplets size={36}/><h1>{FALLBACK_TITLE}</h1>{error?<><p>{error}</p><button className="command" onClick={refresh}><RefreshCw size={16}/>{tr('app.reconnect')}</button></>:<p><LoaderCircle size={17} className="spin"/>{tr('app.loading')}</p>}</main>;
   const controlsEnabled=Boolean(data.controls_enabled)&&!isStaticDemo();
   const all=data.accounts.flatMap(a=>a.history.candy),stats=logicStats(all),rate=stats.samples?Math.round(stats.rate*1000)/10:null;
   const errorAccounts=data.accounts.filter(a=>a.circuit?.active||['candy','drawing'].some(k=>['fail','error'].includes(latest(a.history[k])?.status))).length;
+  const scheduleEnabled=data.service?data.service.schedule_enabled:true;
   const elapsed=Math.max(0,Math.floor((data.next_run_at*1000-tick)/1000));
   const stale=tick/1000-(data.scheduler.last_account_sync||data.generated_at)>6300;
   const progress=Math.max(0,Math.min(100,100-elapsed/(data.interval_seconds||2700)*100));
@@ -221,10 +220,12 @@ function App() {
   const changeCategory=id=>{setCategory(id);setPage(1);};
   const pager=<div className="pagination"><span>{tr('page.summary',{start:view.total?view.start+1:0,end:view.start+view.accounts.length,total:view.total})}</span><div><IconButton title={tr('page.prev')} disabled={view.page<=1} onClick={()=>setPage(view.page-1)}><ArrowLeft size={16}/></IconButton><span className="page-count">{tr('page.label',{page:view.page,pages:view.pages})}</span><IconButton title={tr('page.next')} disabled={view.page>=view.pages} onClick={()=>setPage(view.page+1)}><ArrowRight size={16}/></IconButton></div></div>;
   const platforms=[...new Set(data.accounts.map(a=>({openai:'GPT',anthropic:'Claude',gemini:'Gemini',grok:'Grok'}[a.platform]||a.platform)))].join(' · ');
-  return <><main className="dashboard">{isStaticDemo()&&<div className="demo-banner" role="note"><Droplets size={16}/><span>{tr('demo.banner')}</span><a href={REPO_URL + '#部署'} target="_blank" rel="noreferrer noopener">{tr('demo.link')}</a></div>}<header className="page-header"><div className="brand"><div className="brand-mark"><Droplets size={25}/></div><div><h1>{tr('app.title')||data.title||FALLBACK_TITLE}</h1><p>{platforms} <span>·</span> {tr('timeline.windowTitle',{hours:data.history_hours||24})}</p></div></div><div className="header-actions"><LanguageSwitch/><span className="update-time">{tr('app.updated',{time:date(data.generated_at,{hour:'2-digit',minute:'2-digit',second:'2-digit'})})}</span><IconButton title={tr('app.refreshTitle')} disabled={loading} onClick={refresh}><RefreshCw size={17} className={loading?'spin':''}/></IconButton></div></header>
+  return <><main className="dashboard">{isStaticDemo()&&<div className="demo-banner" role="note"><Droplets size={16}/><span>{tr('demo.banner')}</span><a href={REPO_URL + '#部署'} target="_blank" rel="noreferrer noopener">{tr('demo.link')}</a></div>}<header className="page-header"><div className="brand"><div className="brand-mark"><Activity size={25}/></div><div><h1>{data.title||FALLBACK_TITLE}</h1><p>{platforms ? platforms+' / ' : ''}{tr('timeline.windowTitle',{hours:data.history_hours||24})}</p></div></div><div className="header-actions"><ThemeSwitch/><LanguageSwitch/><span className="update-time">{tr('app.updated',{time:date(data.generated_at,{hour:'2-digit',minute:'2-digit',second:'2-digit'})})}</span><IconButton title={tr('app.refreshTitle')} disabled={loading} onClick={refresh}><RefreshCw size={17} className={loading?'spin':''}/></IconButton></div></header>
+    <nav className="workspace-tabs" aria-label="巡检页面"><button className={workspaceTab==='monitor'?'active':''} onClick={()=>setWorkspaceTab('monitor')}>账号巡检</button><button className={workspaceTab==='guide'?'active':''} onClick={()=>setWorkspaceTab('guide')}>检测参考</button><button className={workspaceTab==='service'?'active':''} onClick={()=>setWorkspaceTab('service')}>服务配置</button></nav>
+    {workspaceTab==='guide'?<QualityGuide/>:workspaceTab==='service'?<ServicePanel service={data.service} onRefresh={refresh}/>:<>
     {(error||data.scheduler.sync_error||stale||schedulerWarning(data.scheduler,data.accounts))&&<div className="connection-warning"><TriangleAlert size={17}/>{error||data.scheduler.sync_error?.message||schedulerWarning(data.scheduler,data.accounts)||tr('error.warning')}</div>}
-    <Hero/>
-    <section className="overview"><div className="overview-main"><span className="overview-icon"><Activity size={24}/></span><div><h2>{tr('overview.heading')}</h2><p>{tr('overview.accounts',{n:data.accounts.length})} <span className="sep">/</span> {tr('overview.method')} <span className="sep">/</span> {tr('overview.rule')}</p><div className="overview-facts"><span><i className={errorAccounts?'dot fail':'dot pass'}/>{errorAccounts?tr('overview.bad',{n:errorAccounts}):tr('overview.ok')}</span><span title={tr('overview.cadenceTitle')}><Clock3 size={13}/>{tr('overview.cadence')}</span><button className="text-button" onClick={()=>setSelection({type:'prompts'})}><FileText size={13}/>{tr('overview.rules')}</button></div></div></div><div className="overview-score"><span>{tr('overview.rate')} <small>{tr('overview.window')}</small></span><strong>{rate==null?'--':rate+'%'}</strong><div className="countdown"><Clock3 size={14}/>{isStaticDemo()?tr('demo.snapshot'):data.scheduler.running?tr('overview.running'):tr('overview.next',{time:`${String(Math.floor(elapsed/60)).padStart(2,'0')}:${String(elapsed%60).padStart(2,'0')}`})}</div><div className="progress"><div style={{width:`${progress}%`}}/></div></div></section>
+    {!data.accounts.length&&<div className="monitor-empty"><Activity size={28}/><h2>还没有检测记录</h2><p>连接 Sub2API 并同步账号后，这里会显示逐账号的逻辑题、SVG 生成结果和历史变化。</p><button className="command" onClick={()=>setWorkspaceTab('service')}>配置检测服务</button><small>当前没有自动发起模型请求。手动运行或启用定时后会消耗额度。</small></div>}
+    <section className="overview"><div className="overview-main"><span className="overview-icon"><Activity size={24}/></span><div><h2>{tr('overview.heading')}</h2><p>{tr('overview.accounts',{n:data.accounts.length})} <span className="sep">/</span> {tr('overview.method')} <span className="sep">/</span> {tr('overview.rule')}</p><div className="overview-facts"><span><i className={errorAccounts?'dot fail':'dot pass'}/>{errorAccounts?tr('overview.bad',{n:errorAccounts}):tr('overview.ok')}</span><span title={tr('overview.cadenceTitle')}><Clock3 size={13}/>{data.service ? `常规 ${data.service.regular_minutes} 分钟 / 安静时段 ${data.service.quiet_minutes} 分钟` : tr('overview.cadence')}</span><button className="text-button" onClick={()=>setSelection({type:'prompts'})}><FileText size={13}/>{tr('overview.rules')}</button></div></div></div><div className="overview-score"><span>{tr('overview.rate')} <small>{tr('overview.window')}</small></span><strong>{rate==null?'--':rate+'%'}</strong><div className="countdown"><Clock3 size={14}/>{isStaticDemo()?tr('demo.snapshot'):!scheduleEnabled?'定时检测已关闭':data.scheduler.running?tr('overview.running'):tr('overview.next',{time:`${String(Math.floor(elapsed/60)).padStart(2,'0')}:${String(elapsed%60).padStart(2,'0')}`})}</div><div className="progress"><div style={{width:`${progress}%`}}/></div></div></section>
     <CostSummary costs={data.costs}/>
     <div className="account-controls"><div className="category-tabs" role="tablist" aria-label={tr('tabs.label')}>{CATEGORIES.map((item,index)=><button key={item.id} id={`category-${item.id}`} role="tab" aria-selected={category===item.id} aria-controls="account-results" tabIndex={category===item.id?0:-1} onClick={()=>changeCategory(item.id)} onKeyDown={e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const length=CATEGORIES.length;const next=e.key==='Home'?0:e.key==='End'?length-1:(index+(e.key==='ArrowRight'?1:length-1))%length;changeCategory(CATEGORIES[next].id);e.currentTarget.parentElement.children[next].focus();}}>{tr(item.labelKey)}<span>{view.counts[item.id]}</span></button>)}</div><div className="filters"><label className="search"><Search size={15}/><input type="search" placeholder={tr('search.placeholder')} aria-label={tr('search.label')} value={query} onChange={e=>{setQuery(e.target.value);setPage(1);}}/></label><label className="filter"><select aria-label={tr('filter.label')} value={filter} onChange={e=>{setFilter(e.target.value);setPage(1);}}><option value="all">{tr('filter.all')}</option><option value="issues">{tr('filter.issues')}</option></select><ChevronDown size={14}/></label></div></div>
     <div className="toolbar"><div className="legend">{['pass','fail','error','quota','running','empty'].map(s=><span key={s}><i className={`dot ${s}`}/>{statusText(s)}</span>)}</div>{pager}</div>
@@ -238,13 +239,15 @@ function App() {
     })}</div>
     <div id="account-results" role="tabpanel" aria-labelledby={`category-${category}`} className="account-list">{view.accounts.map(a=><Account key={a.id} account={a} controlsEnabled={controlsEnabled} controlling={busyControls[a.id]} onControl={control} onPrice={savePrice} onDetail={openDetail}/>)}{!view.accounts.length&&<div className="no-results"><Search size={25}/><h2>{tr('empty.title')}</h2><button className="text-button" onClick={()=>{setQuery('');setFilter('all');changeCategory('all');}}>{tr('empty.clear')}</button></div>}</div><nav aria-label={tr('pagination.label')} className="bottom-pagination">{pager}</nav>
     <footer className="page-footer"><span>{tr('app.title')} <span className="sep">/</span> {tr('footer.by')}</span><span>{tr('footer.refresh')} <span className="sep">·</span> {tr('footer.retention')}</span></footer>
+    </>}
   </main>{selection&&<Modal key={selection.id||selection.type} selection={selection} onClose={()=>setSelection(null)} data={data}/>}{toast&&<Toast toast={toast} onClose={closeToast}/>}</>;
 }
 
 function Root(){
   const {language}=useI18n();
   // Remount on language change so every module-scope tr() call re-reads the active table.
-  return <App key={language}/>;
+  return isStaticDemo() ? <App key={language}/> : <ConsoleApp/>;
 }
 
+document.documentElement.dataset.embedded=new URLSearchParams(location.search).get('embed')==='1'?'true':'false';
 createRoot(document.getElementById('root')).render(<LanguageProvider><Root/></LanguageProvider>);
