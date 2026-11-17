@@ -20,6 +20,7 @@ UPSTREAM_ERRORS = frozenset(('CONNECT_TIMEOUT','FIRST_RESPONSE_TIMEOUT','STREAM_
 # Our own generation wall cut a stream that was still delivering data. The supplier answered;
 # the budget ran out. Count it as a failed evaluation, never as an upstream outage.
 BUDGET_ERRORS = frozenset(('GENERATION_BUDGET_EXCEEDED',))
+NON_RETRYABLE_ERRORS = frozenset(('MODEL_UNSUPPORTED', 'INVALID_REQUEST', 'AUTHENTICATION_FAILED'))
 
 
 def upstream_failure(code):
@@ -32,6 +33,11 @@ def request_failure_class(code, request_called):
     if code in BUDGET_ERRORS:
         return 'budget'
     return 'upstream' if upstream_failure(code) else 'local'
+
+
+def retryable_request_error(code):
+    """400 model/parameter/auth failures are configuration faults, not outages."""
+    return code not in NON_RETRYABLE_ERRORS
 
 
 def consecutive_request_errors(log):

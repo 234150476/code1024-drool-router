@@ -960,7 +960,15 @@ def probe(account, kind, timeout=REQUEST_TOTAL_SECONDS, *, prompt=None, instruct
                         message = err.get('message', str(err)) if isinstance(err,dict) else str(err)
                     except (ValueError, TypeError):
                         message = '上游 HTTP 请求失败' if '<html' in raw.lower() else raw[:1600]
-                    raise ProbeError('HTTP_'+str(response.status_code), 'HTTP '+str(response.status_code)+'：'+redact(message, secrets, True))
+                    text = str(message)
+                    if response.status_code == 400:
+                        lowered = text.lower()
+                        code = 'MODEL_UNSUPPORTED' if ('model' in lowered and ('not supported' in lowered or 'unsupported' in lowered or 'support' in lowered)) else 'INVALID_REQUEST'
+                    elif response.status_code in (401, 403):
+                        code = 'AUTHENTICATION_FAILED'
+                    else:
+                        code = 'HTTP_' + str(response.status_code)
+                    raise ProbeError(code, 'HTTP '+str(response.status_code)+'：'+redact(text, secrets, True))
                 if 'application/json' in response.headers.get('Content-Type', ''):
                     chunks = []
                     count = 0

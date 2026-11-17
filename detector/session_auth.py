@@ -2,7 +2,7 @@
 import requests
 
 
-def admin_identity(base_url, token, user_agent='', client_ip=''):
+def user_identity(base_url, token, user_agent='', client_ip=''):
     if not base_url or not token or len(token) > 8192 or token.count('.') != 2:
         return False
     headers = {'Authorization': 'Bearer ' + token, 'User-Agent': user_agent}
@@ -18,12 +18,20 @@ def admin_identity(base_url, token, user_agent='', client_ip=''):
                 return False
             value = response.json()
             user = value.get('data', {})
-            if (value.get('code', 0) == 0 and user.get('role') == 'admin' and
-                    user.get('status') == 'active'):
-                return {'id': user.get('id'), 'role': 'admin'}
+            if (value.get('code', 0) == 0 and user.get('status') == 'active' and
+                    user.get('role') in ('admin', 'user')):
+                return {'id': user.get('id'), 'role': user.get('role'), 'email': user.get('email'),
+                        'username': user.get('username')}
             return None
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         return False
+
+
+def admin_identity(base_url, token, user_agent='', client_ip=''):
+    identity = user_identity(base_url, token, user_agent, client_ip)
+    if identity and identity.get('role') == 'admin':
+        return identity
+    return None if identity is not False else False
 
 
 def verify_admin_session(base_url, token, user_agent='', client_ip=''):

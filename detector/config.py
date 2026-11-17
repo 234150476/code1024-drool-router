@@ -54,7 +54,7 @@ DEFAULTS = {
     'base_url': '',
     'data_dir': './data',
     'web': {'host': '127.0.0.1', 'port': 4191, 'public_controls': False,
-            'frame_ancestors': [], 'public_origin': ''},
+            'frame_ancestors': [], 'public_origin': '', 'session_auth_url': ''},
     'schedule': {
         'enabled': False,
         'timezone': 'Asia/Shanghai',

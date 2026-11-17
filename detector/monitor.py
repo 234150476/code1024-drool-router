@@ -23,7 +23,7 @@ from .drawing_signals import analyze as analyze_drawing, from_attempts as drawin
 from .question_bank import CONFIRMATION, ORIGINAL, TEMPLATES, VERSION, grade, select_question, two_request_verdict
 from .prompts import BENCHMARKS, DRAWING_PROFILE, EFFORT, EXPECTED_ANSWER, INSTRUCTIONS, LEGACY_DRAWING_INSTRUCTIONS, MODEL, PROMPTS, TITLE
 from .upstream import CLIENT_INFO, OAUTH_QUOTA_ERROR, ProbeError, Sub2API, client_info, oauth_quota_state, probe, redact, request_budget
-from .quality_routing import BUDGET_ERRORS, QualityRouter, REQUEST_POLICY, consecutive_request_errors, request_failure_class, upstream_failure
+from .quality_routing import BUDGET_ERRORS, QualityRouter, REQUEST_POLICY, consecutive_request_errors, request_failure_class, retryable_request_error, upstream_failure
 from .priority_routing import Prices, PriorityRouter, RoutingChain
 from .schedule import current_slot, next_slot, schedule_info, window_slots
 
@@ -358,8 +358,11 @@ def execute_run(store, api, run, batch_deadline, request_fn=probe, sleep=time.sl
         trip = run.get('request_policy')==REQUEST_POLICY and consecutive_request_errors(attempt_log)
         # A budget truncation repeats the same wall; resending would burn another full budget.
         walled = code in BUDGET_ERRORS
+        non_retryable = not retryable_request_error(code)
         store.update(run['id'],error_code=code,error=message,attempt_log=json.dumps(attempt_log,ensure_ascii=False),
-                     **({'status':'error','finished_at':time.time(),'duration':time.monotonic()-start} if attempt>=limit or trip or walled else {}))
+                     **({'status':'error','finished_at':time.time(),'duration':time.monotonic()-start} if non_retryable or attempt>=limit or trip or walled else {}))
+        if non_retryable:
+            return
         if trip:
             if quality_router:
                 quality_router.reconcile()
@@ -480,7 +483,7 @@ def execute_logic_run(store, api, run, batch_deadline, request_fn, sleep, qualit
                 store.costs.finish(entry['request_id'], 'error')
             entry.update(status='error',code=code,message=message,seconds=round(time.monotonic()-attempt_start,2),timings=timings,
                          failure_class=request_failure_class(code,request_called))
-            if attempt>=limit or run.get('request_policy')==REQUEST_POLICY and consecutive_request_errors(log):
+            if not retryable_request_error(code) or attempt>=limit or run.get('request_policy')==REQUEST_POLICY and consecutive_request_errors(log):
                 results.append({'question_id':question['id'],'status':'error','error_code':code,'error':message,'attempts':attempt})
                 finish('error',error_code=code,error=message)
                 return

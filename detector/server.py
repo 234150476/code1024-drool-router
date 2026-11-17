@@ -334,4 +334,6 @@ if __name__=='__main__':
         httpd.serve_forever()
     finally:
         console.stop.set()
+        if getattr(console, 'self_service', None) is not None:
+            console.self_service.stop.set()
         httpd.server_close()

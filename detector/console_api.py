@@ -6,11 +6,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from .console_config import ConsoleError
 from .session_auth import admin_identity
+from .self_service import CATALOG
 
 
 def dispatch(handler, path):
     service = handler.server.console
-    if service is None or not path.startswith(('/api/public/', '/api/admin/')):
+    if service is None or not path.startswith(('/api/public/', '/api/admin/', '/api/user/')):
         return False
     try:
         if path.startswith('/api/public/'):
@@ -19,31 +20,19 @@ def dispatch(handler, path):
             return public(handler, service, path)
         supplied = handler.headers.get('Authorization', '')
         token = supplied[7:] if supplied.startswith('Bearer ') else ''
+        if path.startswith('/api/user/'):
+            identity = service.self_service.identity(token, handler.headers.get('User-Agent', ''), handler.headers.get('X-Real-IP', ''))
+            actor = str(identity['id'])
+            body = read_body(handler, 131072) if handler.command not in ('GET', 'HEAD') else None
+            user(handler, service, path, body, token, actor)
+            return True
         identity = admin_identity(handler.server.session_auth_url, token,
                                   handler.headers.get('User-Agent', ''), handler.headers.get('X-Real-IP', ''))
         if not identity:
             raise ConsoleError('需要有效的管理员登录' if identity is not None else '仅管理员可以管理巡检',
                                401 if identity is not None else 403)
         actor = str(identity['id'])
-        body = None
-        if handler.command not in ('GET', 'HEAD'):
-            if not handler.valid_origin(handler.headers.get('Origin', '')):
-                raise ConsoleError('请求来源不被允许', 403)
-            if handler.headers.get('Content-Type') != 'application/json' or handler.headers.get('Transfer-Encoding'):
-                raise ConsoleError('需要 JSON 请求', 415)
-            try:
-                length = int(handler.headers.get('Content-Length', '0'))
-            except ValueError:
-                raise ConsoleError('请求大小无效', 413) from None
-            if not 0 < length <= 131072:
-                raise ConsoleError('请求大小超出限制', 413)
-            handler.connection.settimeout(5)
-            try:
-                body = json.loads(handler.rfile.read(length))
-            except (ValueError, UnicodeError):
-                raise ConsoleError('JSON 无效') from None
-            if not isinstance(body, dict):
-                raise ConsoleError('需要 JSON 对象')
+        body = read_body(handler, 131072) if handler.command not in ('GET', 'HEAD') else None
         admin(handler, service, path, body, token, actor)
     except ConsoleError as exc:
         handler.send_json({'error': exc.message}, exc.status)
@@ -53,8 +42,49 @@ def dispatch(handler, path):
     return True
 
 
+def read_body(handler, limit):
+    if not handler.valid_origin(handler.headers.get('Origin', '')):
+        raise ConsoleError('请求来源不被允许', 403)
+    if handler.headers.get('Content-Type') != 'application/json' or handler.headers.get('Transfer-Encoding'):
+        raise ConsoleError('需要 JSON 请求', 415)
+    try:
+        length = int(handler.headers.get('Content-Length', '0'))
+    except ValueError:
+        raise ConsoleError('请求大小无效', 413) from None
+    if not 0 < length <= limit:
+        raise ConsoleError('请求大小超出限制', 413)
+    handler.connection.settimeout(5)
+    try:
+        body = json.loads(handler.rfile.read(length))
+    except (ValueError, UnicodeError):
+        raise ConsoleError('JSON 无效') from None
+    if not isinstance(body, dict):
+        raise ConsoleError('需要 JSON 对象')
+    return body
+
+
 def public(handler, service, path):
-    if path in ('/api/public/overview', '/api/public/groups'):
+    if path == '/api/public/self-results':
+        jobs = []
+        for job in service.store.self_jobs(public_only=True):
+            rows = [{'kind': r.get('kind'), 'title': r.get('title'), 'status': r.get('status'),
+                     'rounds': [{'round': x.get('round'), 'status': x.get('status')} for x in r.get('rounds', [])]}
+                    for r in job.get('results', [])]
+            jobs.append({'id': job['id'], 'key_name': job['key_name'], 'model': job['model'],
+                         'effort': job['effort'], 'status': job['status'], 'created_at': job['created_at'],
+                         'finished_at': job['finished_at'], 'results': rows})
+        return handler.send_json({'jobs': jobs})
+    elif match := re.fullmatch(r'/api/public/self-results/([a-f0-9]{32})', path):
+        job = service.store.self_job(match[1])
+        if not job['public']:
+            raise ConsoleError('结果不存在或未公开', 404)
+        rows = [{'kind': r.get('kind'), 'title': r.get('title'), 'status': r.get('status'),
+                 'rounds': [{'round': x.get('round'), 'status': x.get('status')} for x in r.get('rounds', [])]}
+                for r in job.get('results', [])]
+        return handler.send_json({'id': job['id'], 'key_name': job['key_name'], 'model': job['model'],
+                                  'effort': job['effort'], 'status': job['status'], 'created_at': job['created_at'],
+                                  'finished_at': job['finished_at'], 'results': rows})
+    elif path in ('/api/public/overview', '/api/public/groups'):
         raw = parse_qs(urlsplit(handler.path).query).get('hours', [''])[0]
         if raw and raw not in ('1', '6', '24', '72', '168', '720'):
             raise ConsoleError('无效时间范围')
@@ -76,6 +106,35 @@ def public(handler, service, path):
     else:
         raise ConsoleError('接口不存在', 404)
     return True
+
+
+def user(handler, service, path, body, token, actor):
+    method = 'GET' if handler.command == 'HEAD' else handler.command
+    if method == 'GET':
+        if path == '/api/user/me':
+            return handler.send_json({'role': 'user', 'id': actor})
+        if path == '/api/user/questions':
+            return handler.send_json({'questions': CATALOG})
+        if path == '/api/user/keys':
+            return handler.send_json({'keys': service.self_service.keys(token)})
+        if path == '/api/user/jobs':
+            return handler.send_json({'jobs': service.self_service.jobs(actor)})
+        if match := re.fullmatch(r'/api/user/keys/(\d+)/models', path):
+            return handler.send_json(service.self_service.models(token, int(match[1])))
+        if match := re.fullmatch(r'/api/user/jobs/([a-f0-9]{32})', path):
+            return handler.send_json(service.self_service.job(match[1], actor))
+    if path == '/api/user/jobs' and method == 'POST':
+        return handler.send_json(service.self_service.create(token, actor, body), 202)
+    match = re.fullmatch(r'/api/user/jobs/([a-f0-9]{32})/stop', path)
+    if match and method == 'POST':
+        fields(body, [])
+        return handler.send_json(service.self_service.stop_job(match[1], actor))
+    match = re.fullmatch(r'/api/user/jobs/([a-f0-9]{32})/publication', path)
+    if match and method == 'PUT':
+        if set(body) != {'public'}:
+            raise ConsoleError('请求字段不完整或包含未知字段')
+        return handler.send_json(service.self_service.publish(match[1], actor, body['public']))
+    raise ConsoleError('接口不存在或不支持此方法', 404)
 
 
 def fields(body, required):

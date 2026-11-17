@@ -46,6 +46,13 @@ class ConsoleStore:
                 CREATE TABLE IF NOT EXISTS console_audit (
                     id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
                     object_id TEXT NOT NULL, created_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS self_jobs (
+                    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, api_key_id INTEGER NOT NULL,
+                    key_name TEXT NOT NULL, status TEXT NOT NULL, model TEXT NOT NULL,
+                    effort TEXT NOT NULL, kinds TEXT NOT NULL, public INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL, started_at REAL, finished_at REAL,
+                    message TEXT, results TEXT NOT NULL DEFAULT '[]');
+                CREATE INDEX IF NOT EXISTS self_jobs_user_time ON self_jobs(user_id, created_at);
             ''')
             for key, value in [('settings', defaults()), ('inventory', {'accounts': [], 'groups': [], 'synced_at': None}),
                                ('publication', {'group_names': {}, 'account_names': {}})]:
@@ -260,6 +267,54 @@ class ConsoleStore:
     def recover_jobs(self):
         with self.db() as db:
             db.execute("UPDATE console_jobs SET status='interrupted',finished_at=?,message='服务已重启，任务未自动重发' WHERE status IN ('running','queued')", (time.time(),))
+            db.execute("UPDATE self_jobs SET status='interrupted',finished_at=?,message='服务已重启，任务未自动重发' WHERE status IN ('running','queued')", (time.time(),))
+
+    def create_self_job(self, user_id, api_key_id, key_name, model, effort, kinds, public=False):
+        ident, now = uuid.uuid4().hex, time.time()
+        with self.db() as db:
+            db.execute('INSERT INTO self_jobs(id,user_id,api_key_id,key_name,status,model,effort,kinds,public,created_at,results) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (ident, str(user_id), int(api_key_id), str(key_name)[:120], 'queued', str(model)[:160], str(effort), dumps(kinds), 1 if public else 0, now, '[]'))
+        return self.self_job(ident)
+
+    @staticmethod
+    def self_job_row(row):
+        value = dict(row)
+        value['kinds'] = json.loads(value['kinds'])
+        value['results'] = json.loads(value['results'])
+        value['public'] = bool(value['public'])
+        return value
+
+    def self_job(self, ident):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM self_jobs WHERE id=?', (ident,)).fetchone()
+        if not row:
+            raise ConsoleError('自助检测任务不存在', 404)
+        return self.self_job_row(row)
+
+    def self_jobs(self, user_id=None, public_only=False):
+        query, args, clauses = 'SELECT * FROM self_jobs', [], []
+        if user_id is not None:
+            clauses.append('user_id=?'); args.append(str(user_id))
+        if public_only:
+            clauses.append('public=1')
+        if clauses:
+            query += ' WHERE ' + ' AND '.join(clauses)
+        query += ' ORDER BY created_at DESC LIMIT 200'
+        with self.db() as db:
+            rows = db.execute(query, args).fetchall()
+        return [self.self_job_row(row) for row in rows]
+
+    def update_self_job(self, ident, **changes):
+        allowed = {'status', 'started_at', 'finished_at', 'message', 'results', 'public'}
+        if set(changes) - allowed:
+            raise ValueError('INVALID_SELF_JOB_UPDATE')
+        values = dict(changes)
+        if 'results' in values:
+            values['results'] = dumps(values['results'])
+        if 'public' in values:
+            values['public'] = 1 if values['public'] else 0
+        with self.db() as db:
+            db.execute('UPDATE self_jobs SET ' + ','.join(k + '=?' for k in values) + ' WHERE id=?', (*values.values(), ident))
 
     def import_results(self, job):
         root = self.private / 'jobs' / job['id']

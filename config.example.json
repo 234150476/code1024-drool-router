@@ -8,7 +8,8 @@
     "port": 4191,
     "public_controls": false,
     "frame_ancestors": [],
-    "public_origin": ""
+    "public_origin": "",
+    "session_auth_url": "https://api.code1024.cc"
   },
   "schedule": {
     "timezone": "Asia/Shanghai",

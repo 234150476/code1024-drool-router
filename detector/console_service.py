@@ -18,6 +18,7 @@ from .console_config import ConsoleError
 from .console_store import ConsoleStore, dumps
 from .console_public import PublicResults
 from .upstream import Sub2API, ProbeError
+from .self_service import SelfService
 
 
 def schedule_slot(spec, now=None):
@@ -45,6 +46,7 @@ class ConsoleService:
     def __init__(self, root, start=True):
         self.store = ConsoleStore(root)
         self.public = PublicResults(self.store)
+        self.self_service = SelfService(self.store, start=start)
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.tokens = {}
@@ -240,10 +242,21 @@ class ConsoleService:
             self.store.import_results(job)
             cancelled = (root / 'stop').exists()
             skipped_count = len(json.loads((root / 'skipped.json').read_text())) if (root / 'skipped.json').exists() else 0
-            self.store.update_job(ident, status='cancelled' if cancelled else 'completed' if result.returncode == 0 else 'failed',
-                                  finished_at=time.time(), message='任务已停止' if cancelled else
-                                  ('%d 个账号因成员或状态变化跳过，请查看任务详情' % skipped_count if skipped_count else None)
-                                  if result.returncode == 0 else '执行失败，请查看任务详情与私有日志')
+            status_counts = self.job_summary(self.store.job(ident)).get('status_counts', {})
+            has_request_errors = bool(status_counts.get('error')) and not (status_counts.get('pass') or status_counts.get('fail'))
+            final_status = 'cancelled' if cancelled else 'failed' if result.returncode != 0 else 'completed_with_errors' if has_request_errors else 'completed'
+            if cancelled:
+                final_message = '任务已停止'
+            elif result.returncode != 0:
+                final_message = '执行失败，请查看任务详情与私有日志'
+            elif has_request_errors:
+                final_message = '模型请求全部失败：0 项可判定 / %d 项请求故障' % status_counts.get('error', 0)
+            elif skipped_count:
+                final_message = '%d 个账号因成员或状态变化跳过，请查看任务详情' % skipped_count
+            else:
+                final_message = None
+            self.store.update_job(ident, status=final_status,
+                                  finished_at=time.time(), message=final_message)
         except Exception:
             logging.exception('Console worker failed: %s', ident)
             self.store.update_job(ident, status='failed', finished_at=time.time(), message='执行未完成；未自动重发模型请求')
