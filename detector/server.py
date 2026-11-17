@@ -124,6 +124,8 @@ class Handler(SimpleHTTPRequestHandler):
         if ((path.startswith('/api/') or path.startswith('/artifacts/')) and
                 not self.artifact_authorized(path) and not self.authorized()):
             return
+        if self.server.console is not None and path.startswith(('/api/', '/artifacts/')):
+            return self.send_json({'error':'接口不存在'},404)
         if path=='/healthz':
             data=json.dumps({'status':'ok','state_ready':(self.server.public/'state.json').exists()}).encode()
             self.send_response(200)
@@ -196,6 +198,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not self.authorized():
             return
+        if self.server.console is not None:
+            return self.send_json({'error':'接口不存在'},404)
         path = urlsplit(self.path).path
         if path == '/api/jobs' and self.server.runtime is not None:
             return self.start_job()

@@ -414,6 +414,13 @@ class Sub2API:
                 if all_accounts or in_evaluation_scope(a):
                     rows.append(a)
             if len(seen)==total:
+                snapshot = os.environ.get('SUB2API_ACCOUNT_SNAPSHOT_FILE', '')
+                if snapshot:
+                    from .credential_snapshot import entry, metadata, read
+                    available = read(snapshot)
+                    for account in rows:
+                        if str(account['id']) in available:
+                            account.update(metadata(entry(snapshot, account)))
                 return sorted(rows, key=lambda a: a['id'])
             if not entries or len(seen)>total or len(entries)<100:
                 raise ProbeError('ACCOUNT_SYNC_INCOMPLETE','账户分页未读取完整，未覆盖现有记录')
@@ -422,7 +429,15 @@ class Sub2API:
 
     def account_state(self, account_id):
         account = self.get('/accounts/' + str(int(account_id)))
+        snapshot = os.environ.get('SUB2API_ACCOUNT_SNAPSHOT_FILE', '')
+        if snapshot:
+            from .credential_snapshot import entry, metadata
+            account.update(metadata(entry(snapshot, account)))
         if account.get('platform') == 'openai' and account.get('type') == 'oauth':
+            if snapshot:
+                if not isinstance(account.get('_quota_policy'), dict):
+                    raise ProbeError('ACCOUNT_QUOTA_UNKNOWN', '凭据快照缺少配额策略，本次未调用模型')
+                return account
             settings = self.get('/settings')
             advanced = self.get('/ops/advanced-settings')
             thresholds = settings.get('account_scheduling_thresholds')
@@ -469,6 +484,18 @@ class Sub2API:
         a = self.account_state(account_id)
         if not in_evaluation_scope(a):
             raise ProbeError('ACCOUNT_EXCLUDED', '账户已不符合检测范围')
+        snapshot = os.environ.get('SUB2API_ACCOUNT_SNAPSHOT_FILE', '')
+        if snapshot:
+            from .credential_snapshot import entry
+            row = entry(snapshot, a)
+            if not isinstance(row.get('credentials'), dict) or not row['credentials']:
+                raise ProbeError('CREDENTIAL_UNAVAILABLE', '账号快照没有请求凭据')
+            a['credentials'] = row['credentials']
+            if row.get('proxy') is not None:
+                a['proxy'] = row['proxy']
+            elif a.get('proxy_id'):
+                raise ProbeError('PROXY_IDENTITY_MISMATCH', '账号快照缺少代理配置')
+            return a
         local_file = os.environ.get('SUB2API_ACCOUNT_CREDENTIALS_FILE', '')
         if local_file:
             try:

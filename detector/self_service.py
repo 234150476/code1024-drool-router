@@ -310,6 +310,7 @@ class SelfService:
                 statuses = [a['status'] for a in answers]
                 final = verdict(statuses)
                 rows.append({'kind': kind, 'title': q['title'], 'status': final, 'rounds': answers,
+                             'prompt':q['prompt'],'expected':q.get('expected') if q['kind'] in ('number','choice','json') else None,
                              'question_type':q['kind'],'bank_version':q.get('version'),'duration':round(time.monotonic()-started,2),'finished_at':time.time(),
                              'error_code': next((a.get('error_code') for a in answers if a.get('error_code')), None)})
                 if self.store.self_job(ident)['status']=='cancelled': return

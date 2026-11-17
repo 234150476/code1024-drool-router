@@ -1,3 +1,5 @@
+> v0.3.0 已简化为两个检测入口，当前配置请阅读 [分组巡检与 Key 检测](inspection-v3.md)。以下保留为旧版本部署记录，隔离、冷却和综合评分说明不再适用。
+
 # 独立质量巡检服务
 
 本目录基于 `noonwake-ai/ai-drool-router` 提交 `a86d96a0e494a99437841a0c9fddf73c7b0c33aa` 二开，保留原 LGPL-3.0-or-later 许可与署名。

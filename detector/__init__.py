@@ -3,4 +3,4 @@
 
 """AI 流口水降智调度 — a self-hosted model quality watchdog for Sub2API."""
 
-__version__ = '1.0.0'
+__version__ = '0.3.0'

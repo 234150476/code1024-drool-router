@@ -53,14 +53,7 @@ class ConsoleStore:
                     created_at REAL NOT NULL, started_at REAL, finished_at REAL,
                     message TEXT, results TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX IF NOT EXISTS self_jobs_user_time ON self_jobs(user_id, created_at);
-                CREATE TABLE IF NOT EXISTS quality_isolations (
-                    account_id INTEGER PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS quality_evidence (
-                    account_id INTEGER NOT NULL, plan_id TEXT NOT NULL, streak INTEGER NOT NULL,
-                    last_job TEXT NOT NULL, signature TEXT NOT NULL DEFAULT '', PRIMARY KEY(account_id,plan_id));
             ''')
-            if 'signature' not in {r['name'] for r in db.execute('PRAGMA table_info(quality_evidence)')}:
-                db.execute("ALTER TABLE quality_evidence ADD COLUMN signature TEXT NOT NULL DEFAULT ''")
             columns={r['name'] for r in db.execute('PRAGMA table_info(self_jobs)')}
             for name, definition in [('questions', "TEXT NOT NULL DEFAULT '[]'"),('group_id','INTEGER'),('group_name',"TEXT NOT NULL DEFAULT ''"),('share_content','INTEGER NOT NULL DEFAULT 0')]:
                 if name not in columns:
@@ -87,6 +80,16 @@ class ConsoleStore:
                     db.execute('INSERT INTO console_plans VALUES (?,1,?,?,?)',
                                (uuid.uuid4().hex, dumps(plan), now, now))
                 db.execute('INSERT INTO console_documents VALUES (?,?,?)', ('migration_v1', 1, '{}'))
+            if not db.execute("SELECT 1 FROM console_documents WHERE key='inspection_v3'").fetchone():
+                for row in db.execute('SELECT id,value FROM console_plans').fetchall():
+                    value=json.loads(row['value'])
+                    value.pop('isolation',None)
+                    value['write_priority']=False
+                    value['write_callable']=False
+                    db.execute('UPDATE console_plans SET value=? WHERE id=?',(dumps(value),row['id']))
+                # Old isolation evidence is retained for rollback/audit only.
+                # No code in this service reads it or modifies gateway routing.
+                db.execute('INSERT INTO console_documents VALUES (?,?,?)',('inspection_v3',1,'{}'))
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -150,6 +153,8 @@ class ConsoleStore:
                                    'platform': str(account.get('platform', ''))[:32],
                                    'type': str(account.get('type', 'unknown'))[:32],
                                    'status': str(account.get('status', 'unknown'))[:32],
+                                   **{key: account.get(key) for key in ('schedulable', 'last_used_at', 'expires_at',
+                                       'rate_limit_reset_at', 'overload_until', 'temp_unschedulable_until')},
                                    'group_ids': sorted(set(group_ids))})
         if not isinstance(groups, list) or any(type(g.get('id')) is not int for g in groups):
             raise ConsoleError('网关分组清单不完整，保留原清单', 502)
@@ -182,7 +187,8 @@ class ConsoleStore:
     def save_plan(self, value, actor, ident=None, revision=None):
         value = validate_plan(value)
         from .quality_catalog import select
-        select(self,value['kinds'])
+        if not value.get('questions'):
+            select(self,value['kinds'])
         if ident and (type(revision) is not int or revision < 1):
             raise ConsoleError('计划版本无效')
         with self.db() as db:
@@ -218,11 +224,16 @@ class ConsoleStore:
             selected.append(deepcopy(a))
         if scope['mode'] == 'accounts':
             skipped.extend({'id': i, 'reason': '账号已移除或清单未同步'} for i in set(scope['account_ids']) - found)
+        selection = value.get('selection', {})
+        if selection.get('mode') == 'recent_active':
+            from .account_selection import recent_active
+            selected, omitted = recent_active(selected, selection['count'])
+            skipped.extend(omitted)
         if len(selected) > settings['value']['max_accounts']:
             raise ConsoleError('检测账号数超过每轮上限，请缩小范围')
         attempts = settings['value']['budgets']['max_attempts']
         from .quality_catalog import select
-        units=sum(q['rounds'] for q in select(self,value['kinds']))
+        units=sum(q['rounds'] for q in (value.get('questions') or select(self,value['kinds'])))
         return {'accounts': selected, 'skipped': skipped, 'account_count': len(selected),
                 'max_requests': len(selected) * attempts * units, 'estimated_cost': None,
                 'inventory_revision': inventory['revision'], 'settings_revision': settings['revision'],
@@ -257,7 +268,7 @@ class ConsoleStore:
             settings = self.document('settings')
             from .quality_catalog import select
             snapshot = {'plan': plan, 'settings': settings, 'targets': preview['accounts'],
-                        'questions':select(self,plan['value']['kinds']),
+                        'questions':plan['value'].get('questions') or select(self,plan['value']['kinds']),
                         'skipped': preview['skipped'], 'preview': preview}
             ident = uuid.uuid4().hex
             db.execute('INSERT INTO console_jobs(id,request_key,plan_id,status,source,actor,created_at,snapshot) VALUES (?,?,?,?,?,?,?,?)',
@@ -291,25 +302,8 @@ class ConsoleStore:
 
     def recover_jobs(self):
         with self.db() as db:
-            interrupted=db.execute("SELECT snapshot FROM console_jobs WHERE source='cooldown' AND status IN ('running','queued')").fetchall()
-            interrupted_ids={a['id'] for row in interrupted for a in json.loads(row['snapshot'])['targets']}
             db.execute("UPDATE console_jobs SET status='interrupted',finished_at=?,message='服务已重启，任务未自动重发' WHERE status IN ('running','queued')", (time.time(),))
             db.execute("UPDATE self_jobs SET status='interrupted',finished_at=?,message='服务已重启，任务未自动重发' WHERE status IN ('running','queued')", (time.time(),))
-            for row in db.execute('SELECT * FROM quality_isolations').fetchall():
-                value=json.loads(row['value'])
-                if value['state']=='pending':
-                    value.update(state='review',message='RESTART_DURING_WRITE')
-                    db.execute('UPDATE quality_isolations SET value=? WHERE account_id=?',(dumps(value),row['account_id']))
-                elif value['state']=='cooling' and row['account_id'] in interrupted_ids:
-                    # An interrupted retest is never replayed immediately. Keep
-                    # ownership, wait a fresh cooldown, then create a new cycle.
-                    delays=[]
-                    for pid in value['plans']:
-                        plan=db.execute('SELECT value FROM console_plans WHERE id=?',(pid,)).fetchone()
-                        if plan: delays.append(json.loads(plan['value']).get('isolation',{}).get('cooldown_minutes',60))
-                    value.update(due_at=time.time()+max(delays or [60])*60,message='RESTART_RETEST_DELAYED')
-                    db.execute('UPDATE quality_isolations SET value=? WHERE account_id=?',(dumps(value),row['account_id']))
-
     def create_self_job(self, user_id, api_key_id, key_name, model, effort, kinds, public=False, questions=None, group_id=None, group_name='',share_content=False):
         ident, now = uuid.uuid4().hex, time.time()
         with self.db() as db:

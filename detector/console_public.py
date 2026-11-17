@@ -134,7 +134,7 @@ class PublicResults:
                 'history_hours': store.document('settings')['value']['retention']['artifacts_hours'],
                 'method': 'account-direct', 'groups': out}
 
-    def history(self, group_id):
+    def history(self, group_id, include_accounts=False):
         groups={g['id']:g for g in self.projection()['groups']}
         if group_id not in groups: raise ConsoleError('分组不存在或未公开',404)
         rows=[];store=self.store
@@ -148,8 +148,12 @@ class PublicResults:
             if not any(store.public_id('group','g'+str(g))==group_id for g in gids): continue
             raw=row['value']
             value={k:raw.get(k) for k in ('title','kind','status','model','effort','bank_version','duration','slot','finished_at','question_type')}
-            value.update(id=store.public_id('record',row['id']),source='admin',
+            value.update(id=store.public_id('record',row['id']),source='admin',batch_id=store.public_id('batch',row['job_id']),
                 content_available=bool(plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))
+            if include_accounts:
+                targets = store.job(row['job_id'])['snapshot']['targets']
+                value['account_id'] = row['account_id']
+                value['account_name'] = next((a['name'] for a in targets if a['id']==row['account_id']), '')
             rows.append(value)
         cutoff=time.time()-store.document('settings')['value']['retention']['artifacts_hours']*3600
         for job in store.self_jobs(public_only=True):
@@ -157,6 +161,7 @@ class PublicResults:
             for index,r in enumerate(job['results']):
                 value={k:r.get(k) for k in ('title','kind','status','bank_version','duration','finished_at','question_type')}
                 value.update(id=store.public_id('self-record',job['id']+':'+str(index)),source='user',
+                    batch_id=store.public_id('self-batch',job['id']),
                     model=job['model'],effort=job['effort'],slot=job['created_at'],content_available=bool(job.get('share_content')))
                 rows.append(value)
         return sorted(rows,key=lambda r:r['slot'],reverse=True)[:300]
@@ -164,11 +169,14 @@ class PublicResults:
     def record(self, ident):
         allowed=next((r for g in self.projection()['groups'] for r in self.history(g['id']) if r['id']==ident),None)
         if not allowed: raise ConsoleError('结果不存在或已撤回',404)
-        value={**allowed,'rounds':[]}
+        value={**allowed,'rounds':[], 'prompt': '', 'expected': None}
         if not allowed['content_available']: return value
         for row in self.store.results():
             if self.store.public_id('record',row['id'])==ident:
                 raw=row['value'];rounds=raw.get('rounds',[])
+                question = raw.get('question') or next((q for q in self.store.job(row['job_id'])['snapshot'].get('questions',[]) if q['id']==raw['kind']), {})
+                value['prompt'] = redact(question.get('prompt',''))
+                value['expected'] = question.get('expected') if question.get('kind') in ('number','choice','json') else None
                 if not rounds:
                     path=self.store.private/'jobs'/row['job_id']/'public'/(row['id']+'.json')
                     if path.exists():
@@ -178,8 +186,12 @@ class PublicResults:
             rounds=[]
             for job in self.store.self_jobs(public_only=True):
                 for index,r in enumerate(job['results']):
-                    if self.store.public_id('self-record',job['id']+':'+str(index))==ident: rounds=r.get('rounds',[])
-        value['rounds']=[{'round':r.get('round'),'status':r.get('status'),'response':redact(r.get('response',''))[:100000]} for r in rounds]
+                    if self.store.public_id('self-record',job['id']+':'+str(index))==ident:
+                        rounds=r.get('rounds',[])
+                        question=next((q for q in job.get('questions',[]) if q['id']==r['kind']),{})
+                        value['prompt']=redact(question.get('prompt',''))
+                        value['expected']=question.get('expected') if question.get('kind') in ('number','choice','json') else None
+        value['rounds']=[{'round':r.get('round'),'status':r.get('status'),'answer':r.get('answer'),'response':redact(r.get('response',''))[:100000]} for r in rounds]
         return value
 
     def run(self, public_id, artifact=False):

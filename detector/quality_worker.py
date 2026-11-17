@@ -37,11 +37,17 @@ def main():
             start=time.monotonic();rounds=[];group_ids=target['group_ids']
             for index in range(q['rounds']):
                 if (root/'stop').exists(): return
+                if snapshot.get('source') == 'timer':
+                    from .console_service import quiet_paused
+                    if quiet_paused(snapshot['plan']['value']['schedule']):
+                        return
                 try:
                     account=api.account(target['id'])
                     group_ids=account.get('group_ids',[])
                     if account['platform']!=platform or set(group_ids)!=set(target['group_ids']):
                         raise ProbeError('ACCOUNT_IDENTITY_MISMATCH','账号平台或分组已变化，请重新同步')
+                    if snapshot['plan']['value'].get('selection',{}).get('mode')=='recent_active' and (account['status']!='active' or account.get('schedulable') is not True):
+                        raise ProbeError('ACCOUNT_NOT_ACTIVE','抽样账号已变为不可调度，本次未请求模型')
                     if oauth_quota_state(account)['limited']:
                         raise ProbeError(OAUTH_QUOTA_ERROR,'账号限额，未请求模型')
                     reply=probe(account,'drawing' if q['kind']=='drawing' else 'candy',

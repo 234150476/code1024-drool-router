@@ -38,10 +38,12 @@ def ids(value, name, limit=200):
 
 
 def schedule(value):
-    if not isinstance(value, dict) or set(value) != {'enabled', 'timezone', 'regular_minutes', 'quiet_start', 'quiet_end', 'quiet_minutes'}:
+    if not isinstance(value, dict) or set(value)-{'quiet_pause'} != {'enabled', 'timezone', 'regular_minutes', 'quiet_start', 'quiet_end', 'quiet_minutes'}:
         raise ConsoleError('定时配置字段不完整')
     result = deepcopy(value)
     boolean(result['enabled'], '定时开关')
+    if 'quiet_pause' in result:
+        boolean(result['quiet_pause'], '安静时段暂停')
     try:
         ZoneInfo(result['timezone'])
     except (ZoneInfoNotFoundError, TypeError, ValueError):
@@ -79,7 +81,7 @@ def defaults():
                              'effort': spec.get('effort') or 'medium'}
                       for name, spec in config.CONFIG['platforms'].items()},
         'budgets': deepcopy(config.CONFIG['budgets']),
-        'schedule': {key: config.CONFIG['schedule'][key] for key in ('enabled', 'timezone', 'regular_minutes', 'quiet_start', 'quiet_end', 'quiet_minutes')},
+        'schedule': {key: config.CONFIG['schedule'][key] for key in ('enabled', 'timezone', 'regular_minutes', 'quiet_start', 'quiet_end', 'quiet_minutes', 'quiet_pause')},
         'concurrency': 2, 'max_accounts': 50,
         'weights': deepcopy(config.get('routing.weights')),
         'rounds': int(config.get('routing.rounds', 3)),
@@ -125,7 +127,7 @@ def validate_settings(value):
 def validate_plan(value):
     required = {'name', 'enabled', 'scope', 'models', 'kinds', 'schedule', 'published', 'public_name',
                 'show_accounts', 'show_answers', 'show_artifacts', 'write_priority', 'write_callable'}
-    if not isinstance(value, dict) or set(value)-{'isolation'} != required:
+    if not isinstance(value, dict) or set(value)-{'isolation', 'selection', 'questions'} != required:
         raise ConsoleError('检测计划包含未知字段或缺少字段')
     out = deepcopy(value)
     out['name'] = text(out['name'], '计划名称', 80)
@@ -145,6 +147,16 @@ def validate_plan(value):
         raise ConsoleError('请选择有效检测项目')
     out['models'] = models(out['models'])
     out['schedule'] = schedule(out['schedule'])
+    if 'questions' in out:
+        from .quality_catalog import validate
+        out['questions'] = validate(out['questions'])
+        if [q['id'] for q in out['questions']] != out['kinds']:
+            raise ConsoleError('计划题目与选择项目不一致')
+    if 'selection' in out:
+        selection = out['selection']
+        if not isinstance(selection, dict) or set(selection) != {'mode', 'count'} or selection['mode'] not in ('all', 'recent_active'):
+            raise ConsoleError('账号抽样配置无效')
+        integer(selection['count'], '每轮抽样账号数', 1, 50)
     # Cross-plan evidence is not yet a routing policy. Never silently ignore an enabled write.
     if out['write_priority'] or out['write_callable']:
         raise ConsoleError('旧版回写开关已停用，请使用质量隔离策略')
@@ -153,6 +165,8 @@ def validate_plan(value):
         if not isinstance(p,dict) or set(p)!={'enabled','failure_rounds','cooldown_minutes','min_available'}:
             raise ConsoleError('隔离策略字段不完整')
         boolean(p['enabled'],'自动隔离')
+        if p['enabled']:
+            raise ConsoleError('此服务仅检测和展示结果，已移除自动隔离与调度回写')
         integer(p['failure_rounds'],'连续失败轮数',1,10)
         integer(p['cooldown_minutes'],'冷却分钟数',5,10080)
         integer(p['min_available'],'分组最低可用账号数',1,100)

@@ -62,6 +62,7 @@ DEFAULTS = {
         'quiet_start': '04:00',
         'quiet_end': '08:00',
         'quiet_minutes': 90,
+        'quiet_pause': False,
         'history_hours': 24,
     },
     'platforms': {

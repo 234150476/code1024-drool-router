@@ -1,3 +1,5 @@
+> **v0.3.0 当前版本**：仅提供「分组定时巡检」与「本人 Key 检测」。每轮抽取分组最近使用的可调度账号；鹈鹕骑车展示可运行 HTML 动画，其他题目展示回答与判定；普通用户不见账号，管理员可见。已移除独立服务的自动隔离、冷却恢复和调度回写。配置与部署见 [分组巡检说明](docs/inspection-v3.md)。
+
 > **code1024-drool-router**：基于 AI Drool Router 二开的独立质量服务，提供公开检测结果、管理员控制台与使用个人 Key 的自助检测，配套 code1024 的主题和嵌入页面。
 > 二开仓库：[daQzi/code1024-drool-router](https://github.com/daQzi/code1024-drool-router)。部署本版请先看 [独立服务部署说明](docs/code1024-standalone.md)。定时与回写默认关闭；下方保留上游说明，配置差异以独立说明为准。
 

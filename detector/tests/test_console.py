@@ -260,7 +260,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.call('/api/admin/jobs',stale,ADMIN,'POST')[0],409)
         self.service.execute(self.service.store.job(job['id']))
         sent=Gateway.requests[0][1]['messages'][-1]['content']
-        self.assertIn('鸟喙',sent) # Old snapshot survived the edited prompt.
+        self.assertIn('2D动画',sent) # Old snapshot survived the edited prompt.
         group=self.service.public.projection()['groups'][0]
         status,history,_=self.call('/api/public/groups/'+group['id']+'/history')
         self.assertEqual(status,200);self.assertEqual(history['runs'][0]['source'],'admin')
@@ -278,5 +278,62 @@ class ConsoleTests(unittest.TestCase):
         result=self.service.store.results()[0]['value']
         self.assertEqual(result['status'],'error');self.assertEqual(result['error_code'],'MODEL_UNSUPPORTED')
         self.assertEqual(self.service.store.job(job['id'])['status'],'completed_with_errors')
+
+    def test_admin_history_accounts_are_absent_from_public_and_user_responses(self):
+        job,_=self.enqueue();self.service.execute(self.service.store.job(job['id']))
+        group=self.service.public.projection()['groups'][0]['id']
+        path='/api/admin/groups/'+group+'/history'
+        self.assertEqual(self.call(path,token=USER)[0],403)
+        status,value,_=self.call(path,token=ADMIN)
+        self.assertEqual(status,200);self.assertEqual(value['runs'][0]['account_id'],1)
+        status,value,_=self.call('/api/public/groups/'+group+'/history',token=USER)
+        self.assertEqual(status,200)
+        self.assertNotIn('account_id',json.dumps(value));self.assertNotIn('private-mail',json.dumps(value))
+
+    def test_public_html_render_and_revocation_keep_opaque_sandbox(self):
+        value=deepcopy(self.plan['value']);value['show_artifacts']=True
+        self.plan=self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
+        job,_=self.enqueue();self.service.execute(self.service.store.job(job['id']))
+        group=self.service.public.projection()['groups'][0]['id']
+        record=self.service.public.history(group)[0]['id']
+        path='/api/public/records/'+record+'/artifact'
+        status,content,headers=self.call(path)
+        self.assertEqual(status,200);self.assertIn(b'<svg',content)
+        self.assertIn('sandbox allow-scripts',headers['Content-Security-Policy'])
+        self.assertIn("connect-src 'none'",headers['Content-Security-Policy'])
+        self.assertNotIn('allow-same-origin',headers['Content-Security-Policy'])
+        value['published']=False;self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
+        self.assertEqual(self.call(path)[0],404)
+
+    def test_private_artwork_links_require_ownership_and_cannot_be_forged(self):
+        job=self.service.store.create_self_job('1',7,'My key','fixture','high',['drawing'])
+        self.service.store.update_self_job(job['id'],status='completed',results=[{'kind':'drawing','title':'作品','question_type':'drawing','status':'pass','rounds':[{'round':1,'status':'pass','response':'<svg><script>document.title="animation"</script></svg>'}]}])
+        self.assertEqual(self.call('/api/user/jobs/'+job['id']+'/render-links')[0],401)
+        status,value,_=self.call('/api/user/jobs/'+job['id']+'/render-links',token=USER)
+        self.assertEqual(status,200);path=value['links']['drawing'][0]
+        self.assertEqual(self.call(path)[0],200)
+        self.assertEqual(self.call(path.split('?')[0])[0],403)
+        self.assertEqual(self.call(path[:-1]+'x')[0],403)
+        self.assertEqual(self.service.store.self_job(job['id'])['public'],False)
+
+    def test_group_inspection_api_validates_role_question_and_recent_account(self):
+        value=deepcopy(self.plan['value']);value['enabled']=False
+        self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
+        # Use the existing group plan; the contract never creates duplicates.
+        spec={'group_id':3,'enabled':True,'model':'fixture-model','effort':'high',
+              'question_ids':['drawing'],'questions':[],
+              'schedule':{**self.plan['value']['schedule'],'enabled':False,'quiet_pause':True,'quiet_start':'22:00','quiet_end':'09:00','regular_minutes':60}}
+        path='/api/admin/inspections/'+self.plan['id']
+        payload={'value':spec,'revision':self.service.store.plan(self.plan['id'])['revision']}
+        self.assertEqual(self.call(path,payload,USER,'PUT')[0],403)
+        status,result,_=self.call(path,payload,ADMIN,'PUT')
+        self.assertEqual(status,200);self.assertEqual(result['group_id'],3)
+        plan=self.service.store.plan(self.plan['id'])
+        self.assertEqual(plan['value']['selection'],{'mode':'recent_active','count':1})
+        self.assertTrue(plan['value']['published']);self.assertNotIn('isolation',plan['value'])
+        self.assertEqual(self.call('/api/admin/inspections',token=ADMIN)[0],200)
+        self.assertEqual(self.call('/api/admin/inspections',token=USER)[0],403)
+        self.assertEqual(self.call('/api/state',token=ADMIN)[0],404)
+        self.assertEqual(self.call('/api/admin/isolations/1/release',{},ADMIN,'POST')[0],404)
 
 if __name__ == '__main__': unittest.main()
