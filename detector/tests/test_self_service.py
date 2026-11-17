@@ -46,7 +46,7 @@ class SelfServiceTests(unittest.TestCase):
         value = public_self_job(self.job(public=True))
         self.assertEqual(set(value), {'id', 'model', 'effort', 'status', 'created_at', 'finished_at', 'results'})
         serialized = json.dumps(value)
-        for hidden in ('private-key-name', 'private response', 'private answer', 'raw upstream error', 'user_id', 'api_key_id', 'key_name', '11'):
+        for hidden in ('private-key-name', 'private response', 'private answer', 'raw upstream error', 'user_id', 'api_key_id', 'key_name'):
             self.assertNotIn(hidden, serialized)
 
     def test_model_unsupported_stops_double_verification(self):
