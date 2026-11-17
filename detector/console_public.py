@@ -9,7 +9,7 @@ from .upstream import redact
 
 def metrics(rows):
     counts = {status: sum(r['status'] == status for r in rows)
-              for status in ('pass', 'fail', 'error', 'quota', 'cancelled')}
+              for status in ('pass', 'fail', 'error', 'quota', 'cancelled','unknown','reference')}
     samples = counts['pass'] + counts['fail']
     durations = [r['duration'] for r in rows if isinstance(r.get('duration'), (int, float)) and r['duration'] >= 0]
     return {**counts, 'samples': samples, 'rate': round(100 * counts['pass'] / samples, 1) if samples else None,
@@ -57,7 +57,10 @@ class PublicResults:
                     if gid in raw_groups:
                         ensure('g' + str(gid), names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
             else:
-                ensure('p' + p['id'], value['public_name'])
+                for a in inventory['accounts']:
+                    if a['id'] in scope['account_ids'] and a['id'] not in scope['exclude_ids']:
+                        for gid in a['group_ids']:
+                            if gid in raw_groups: ensure('g'+str(gid),names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
 
         for row in store.results():
             if hours is not None and row['slot'] < time.time() - hours * 3600:
@@ -73,7 +76,8 @@ class PublicResults:
                 keys = [('g' + str(gid), names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
                         for gid in set(scope['group_ids']) & set(row['group_ids']) if gid in raw_groups]
             else:
-                keys = [('p' + plan['id'], value['public_name'])] if row['account_id'] in scope['account_ids'] else []
+                keys = [('g'+str(gid),names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
+                        for gid in row['group_ids'] if gid in raw_groups] if row['account_id'] in scope['account_ids'] else []
             raw = row['value']
             for key, name in keys:
                 group = ensure(key, name)
@@ -97,7 +101,7 @@ class PublicResults:
                 if a['id'] in scope['exclude_ids']:
                     continue
                 keys = (['g' + str(g) for g in set(a['group_ids']) & set(scope['group_ids']) if g in raw_groups]
-                        if scope['mode'] == 'groups' else ['p' + p['id']] if a['id'] in scope['account_ids'] else [])
+                        if scope['mode'] == 'groups' else ['g'+str(g) for g in a['group_ids'] if g in raw_groups] if a['id'] in scope['account_ids'] else [])
                 for key in keys:
                     group = groups.get(store.public_id('group', key))
                     if not group:
@@ -108,6 +112,12 @@ class PublicResults:
                         group['accounts'].setdefault(aid, {'id': aid,
                             'name': names['account_names'].get(str(a['id'])) or '账号 ' + aid[:6].upper(),
                             'group_id': group['id'], 'group_name': group['name'], 'runs': []})
+        # User checks are a separate measurement source, grouped by the key's
+        # immutable group snapshot, without exposing user/key/account identity.
+        for job in store.self_jobs(public_only=True):
+            gid=job.get('group_id')
+            if type(gid) is int and gid in raw_groups:
+                ensure('g'+str(gid),names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
         out = []
         for group in groups.values():
             # Result IDs deduplicate shared accounts across overlapping plans in this group.
@@ -123,6 +133,54 @@ class PublicResults:
         return {'title': store.document('settings')['value']['title'], 'generated_at': time.time(),
                 'history_hours': store.document('settings')['value']['retention']['artifacts_hours'],
                 'method': 'account-direct', 'groups': out}
+
+    def history(self, group_id):
+        groups={g['id']:g for g in self.projection()['groups']}
+        if group_id not in groups: raise ConsoleError('分组不存在或未公开',404)
+        rows=[];store=self.store
+        plans={p['id']:p['value'] for p in store.plans() if p['value']['published']}
+        for row in store.results():
+            plan=plans.get(row['plan_id'])
+            if not plan: continue
+            s=plan['scope']
+            if row['account_id'] in s['exclude_ids'] or (s['mode']=='accounts' and row['account_id'] not in s['account_ids']): continue
+            gids=set(row['group_ids'])&(set(s['group_ids']) if s['mode']=='groups' else set(row['group_ids']))
+            if not any(store.public_id('group','g'+str(g))==group_id for g in gids): continue
+            raw=row['value']
+            value={k:raw.get(k) for k in ('title','kind','status','model','effort','bank_version','duration','slot','finished_at','question_type')}
+            value.update(id=store.public_id('record',row['id']),source='admin',
+                content_available=bool(plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))
+            rows.append(value)
+        cutoff=time.time()-store.document('settings')['value']['retention']['artifacts_hours']*3600
+        for job in store.self_jobs(public_only=True):
+            if job.get('group_id') is None or store.public_id('group','g'+str(job['group_id']))!=group_id or job['created_at']<cutoff: continue
+            for index,r in enumerate(job['results']):
+                value={k:r.get(k) for k in ('title','kind','status','bank_version','duration','finished_at','question_type')}
+                value.update(id=store.public_id('self-record',job['id']+':'+str(index)),source='user',
+                    model=job['model'],effort=job['effort'],slot=job['created_at'],content_available=bool(job.get('share_content')))
+                rows.append(value)
+        return sorted(rows,key=lambda r:r['slot'],reverse=True)[:300]
+
+    def record(self, ident):
+        allowed=next((r for g in self.projection()['groups'] for r in self.history(g['id']) if r['id']==ident),None)
+        if not allowed: raise ConsoleError('结果不存在或已撤回',404)
+        value={**allowed,'rounds':[]}
+        if not allowed['content_available']: return value
+        for row in self.store.results():
+            if self.store.public_id('record',row['id'])==ident:
+                raw=row['value'];rounds=raw.get('rounds',[])
+                if not rounds:
+                    path=self.store.private/'jobs'/row['job_id']/'public'/(row['id']+'.json')
+                    if path.exists():
+                        detail=json.loads(path.read_text());rounds=[{'round':1,'response':detail.get('response',''),'status':raw['status']}]
+                break
+        else:
+            rounds=[]
+            for job in self.store.self_jobs(public_only=True):
+                for index,r in enumerate(job['results']):
+                    if self.store.public_id('self-record',job['id']+':'+str(index))==ident: rounds=r.get('rounds',[])
+        value['rounds']=[{'round':r.get('round'),'status':r.get('status'),'response':redact(r.get('response',''))[:100000]} for r in rounds]
+        return value
 
     def run(self, public_id, artifact=False):
         # Resolve only IDs that exist in the current public account projection.

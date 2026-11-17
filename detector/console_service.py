@@ -14,11 +14,12 @@ import time
 from zoneinfo import ZoneInfo
 
 from . import config
-from .console_config import ConsoleError
+from .console_config import ConsoleError, validate_plan
 from .console_store import ConsoleStore, dumps
 from .console_public import PublicResults
 from .upstream import Sub2API, ProbeError
 from .self_service import SelfService
+from .quality_isolation import IsolationPolicy, policy
 
 
 def schedule_slot(spec, now=None):
@@ -47,6 +48,7 @@ class ConsoleService:
         self.store = ConsoleStore(root)
         self.public = PublicResults(self.store)
         self.self_service = SelfService(self.store, start=start)
+        self.isolation = IsolationPolicy(self.store)
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.tokens = {}
@@ -57,11 +59,13 @@ class ConsoleService:
             self.thread = threading.Thread(target=self.loop, daemon=True)
             self.thread.start()
 
-    @staticmethod
-    def machine_key():
+    def machine_key(self):
         try:
             path = os.environ.get('SUB2API_ADMIN_KEY_FILE')
             value = Path(path).read_text().strip() if path else os.environ.get('SUB2API_ADMIN_KEY', '')
+            if not value:
+                file=self.store.private/'automation-key'
+                value=file.read_text().strip() if file.exists() else ''
             return value if len(value) >= 16 else ''
         except OSError:
             return ''
@@ -71,6 +75,22 @@ class ConsoleService:
                 'gateway_configured': bool(config.get('base_url')),
                 'write_priority': False, 'write_callable': False,
                 'admin_entry': '/custom/quality-inspection'}
+
+    def save_automation(self,key,actor):
+        if not isinstance(key,str) or not 16<=len(key.strip())<=1000:
+            raise ConsoleError('请提供有效的网关管理员 API Key')
+        api=Sub2API(config.get('base_url'),key.strip())
+        try:
+            accounts=api.accounts(all_accounts=True)
+            if accounts and not os.environ.get('SUB2API_ACCOUNT_CREDENTIALS_FILE'):
+                # A list-only key cannot run unattended account probes. Confirm
+                # the real export permission now, without calling any model.
+                api.get('/accounts/data',{'ids':str(accounts[0]['id']),'include_proxies':'true'})
+        except ProbeError as exc: raise ConsoleError('机器凭据验证失败：'+exc.code,400) from None
+        file=self.store.private/'automation-key.tmp'
+        file.write_text(key.strip());file.chmod(0o600);file.replace(self.store.private/'automation-key')
+        with self.store.db() as db: self.store.audit(db,actor,'save_automation_credential','automation')
+        return self.capabilities()
 
     def sync_inventory(self, token, actor):
         key = token or self.machine_key()
@@ -89,8 +109,15 @@ class ConsoleService:
     def save_plan(self, value, actor, ident=None, revision=None):
         if not isinstance(value, dict):
             raise ConsoleError('检测计划必须为对象')
+        value=validate_plan(value)
         if isinstance(value.get('schedule'), dict) and value['schedule'].get('enabled') and not self.machine_key():
             raise ConsoleError('尚未配置机器凭据，无法启用定时；可关闭定时后保存')
+        if policy(value)['enabled'] and not self.machine_key():
+            raise ConsoleError('自动隔离及冷却复测需要先配置机器凭据')
+        if policy(value)['enabled']:
+            from .quality_catalog import select
+            if not any(q['kind'] in ('number','choice','json') for q in select(self.store,value.get('kinds'))):
+                raise ConsoleError('自动隔离至少需要一道有标准答案的题，作品和指纹不参与自动隔离')
         return self.store.save_plan(value, actor, ident, revision)
 
     def save_settings(self, value, revision, actor):
@@ -103,7 +130,7 @@ class ConsoleService:
     def enqueue(self, payload, token, actor, source='manual'):
         if not token and not self.machine_key():
             raise ConsoleError('执行凭据已失效，请重新登录', 401)
-        required = {'plan_id', 'request_key', 'confirmed', 'plan_revision', 'settings_revision', 'inventory_revision'}
+        required = {'plan_id', 'request_key', 'confirmed', 'plan_revision', 'settings_revision', 'inventory_revision','questions_revision'}
         if not isinstance(payload, dict) or set(payload) != required or payload['confirmed'] is not True:
             raise ConsoleError('请先预览并确认检测范围和模型请求')
         with self.lock:
@@ -124,6 +151,12 @@ class ConsoleService:
         except (OSError, ValueError):
             pass
         dbpath = root / 'private' / 'state.sqlite3'
+        if snapshot.get('questions'):
+            try:
+                rows=json.loads((root/'results.json').read_text())
+                for row in rows: status_counts[row['status']]=status_counts.get(row['status'],0)+1
+                completed=len(rows)
+            except (OSError,ValueError): pass
         if dbpath.exists():
             try:
                 with sqlite3.connect('file:' + str(dbpath) + '?mode=ro', uri=True, timeout=1) as db:
@@ -152,7 +185,16 @@ class ConsoleService:
                 self.store.update_job(ident, message='正在停止后续请求；已发出的请求等待结束')
             with self.store.db() as db:
                 self.store.audit(db, actor, 'stop_job', ident)
+            if job['source']=='cooldown':
+                self.review_retest(job,'ADMIN_STOPPED_RETEST')
         return self.job_summary(self.store.job(ident))
+
+    def review_retest(self,job,message):
+        ids={a['id'] for a in job['snapshot']['targets']}
+        for record in self.isolation.records():
+            if record['account_id'] in ids and record['state']=='cooling':
+                record.update(state='review',message=message)
+                self.isolation.save(record,'retest_review_required')
 
     def loop(self):
         last_schedule = 0
@@ -182,6 +224,24 @@ class ConsoleService:
     def tick(self):
         if not self.machine_key():
             return
+        for record in self.isolation.records():
+            if record['state']!='cooling' or record['due_at']>time.time(): continue
+            for pid in record['plans']:
+                plan=self.store.plan(pid)
+                if not plan['value']['enabled'] or not policy(plan['value'])['enabled'] or plan['revision']!=record['plans'][pid]['revision']:
+                    record.update(state='review',message='ISOLATION_CONFIG_CHANGED')
+                    self.isolation.save(record,'isolation_review_required');break
+                with self.store.db() as db:
+                    if db.execute("SELECT 1 FROM console_jobs WHERE plan_id=? AND source='cooldown' AND status IN ('queued','running')",(pid,)).fetchone(): continue
+                self.sync_inventory(None,'scheduler')
+                try:
+                    preview=self.store.resolve(plan)
+                    if record['account_id'] not in {a['id'] for a in preview['accounts']}: raise ConsoleError('账号已退出范围')
+                except ConsoleError:
+                    record.update(state='review',message='ISOLATION_SCOPE_OR_QUESTIONS_CHANGED')
+                    self.isolation.save(record,'isolation_review_required');break
+                key='cooldown:'+str(record['account_id'])+':'+pid+':'+str(int(record['due_at']))
+                self.store.create_job(pid,key,'scheduler','cooldown',preview,target_ids={record['account_id']})
         for plan in self.store.plans():
             value = plan['value']
             if not value['enabled'] or not value['schedule']['enabled']:
@@ -196,7 +256,7 @@ class ConsoleService:
             if not preview['account_count']:
                 continue
             self.enqueue({'plan_id': plan['id'], 'request_key': key, 'confirmed': True,
-                          **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision')}}, None, 'scheduler', 'timer')
+                          **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision','questions_revision')}}, None, 'scheduler', 'timer')
 
     def execute(self, job):
         ident = job['id']
@@ -225,18 +285,25 @@ class ConsoleService:
                                    rounds=settings['rounds'], stability_rounds=settings['stability_rounds'])
         configfile = root / 'config.json'
         configfile.write_text(dumps(snapshot)); configfile.chmod(0o600)
+        if job['snapshot'].get('questions'):
+            (root/'snapshot.json').write_text(dumps({**job['snapshot'],'created_at':job['created_at']}))
+            (root/'snapshot.json').chmod(0o600)
         env = dict(os.environ)
         env.pop('DROOL_ADMIN_BEARER_TOKEN', None)
         if token:
             env['DROOL_ADMIN_BEARER_TOKEN'] = token
             env.pop('SUB2API_ADMIN_KEY', None)
             env.pop('SUB2API_ADMIN_KEY_FILE', None)
+        elif self.machine_key():
+            env['SUB2API_ADMIN_KEY']=self.machine_key()
+            env.pop('SUB2API_ADMIN_KEY_FILE',None)
         try:
             if not token and not self.machine_key():
                 raise ConsoleError('执行凭据不可用，请重新启动任务')
             with (root / 'worker.log').open('w') as log:
                 os.chmod(root / 'worker.log', 0o600)
-                result = subprocess.run([sys.executable, '-m', 'detector.console_worker', '--root', str(root)],
+                module='detector.quality_worker' if job['snapshot'].get('questions') else 'detector.console_worker'
+                result = subprocess.run([sys.executable, '-m', module, '--root', str(root)],
                                         cwd=Path(__file__).resolve().parent.parent, env=env,
                                         stdout=log, stderr=log, timeout=11000, check=False)
             self.store.import_results(job)
@@ -257,10 +324,18 @@ class ConsoleService:
                 final_message = None
             self.store.update_job(ident, status=final_status,
                                   finished_at=time.time(), message=final_message)
+            if self.machine_key():
+                try:
+                    self.isolation.observe(self.store.job(ident),Sub2API(config.get('base_url'),self.machine_key()))
+                except Exception:
+                    logging.exception('Quality policy failed for job %s',ident)
+                    with self.store.db() as db: self.store.audit(db,'quality-policy','policy_execution_failed',ident)
         except Exception:
             logging.exception('Console worker failed: %s', ident)
             self.store.update_job(ident, status='failed', finished_at=time.time(), message='执行未完成；未自动重发模型请求')
         finally:
+            if job['source']=='cooldown' and self.store.job(ident)['status'] not in ('completed','completed_with_errors'):
+                self.review_retest(job,'RETEST_FAILED_OR_CANCELLED')
             token = None
 
     def cleanup(self):

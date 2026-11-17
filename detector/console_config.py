@@ -125,7 +125,7 @@ def validate_settings(value):
 def validate_plan(value):
     required = {'name', 'enabled', 'scope', 'models', 'kinds', 'schedule', 'published', 'public_name',
                 'show_accounts', 'show_answers', 'show_artifacts', 'write_priority', 'write_callable'}
-    if not isinstance(value, dict) or set(value) != required:
+    if not isinstance(value, dict) or set(value)-{'isolation'} != required:
         raise ConsoleError('检测计划包含未知字段或缺少字段')
     out = deepcopy(value)
     out['name'] = text(out['name'], '计划名称', 80)
@@ -141,11 +141,19 @@ def validate_plan(value):
     other = 'account_ids' if selected == 'group_ids' else 'group_ids'
     if not s[selected] or s[other]:
         raise ConsoleError('请选择检测对象，按分组与按账号不能混用')
-    if not isinstance(out['kinds'], list) or not out['kinds'] or set(out['kinds']) - {'candy', 'drawing'} or len(out['kinds']) != len(set(out['kinds'])):
+    if not isinstance(out['kinds'], list) or not out['kinds'] or any(not isinstance(k,str) for k in out['kinds']) or len(out['kinds']) != len(set(out['kinds'])):
         raise ConsoleError('请选择有效检测项目')
     out['models'] = models(out['models'])
     out['schedule'] = schedule(out['schedule'])
     # Cross-plan evidence is not yet a routing policy. Never silently ignore an enabled write.
     if out['write_priority'] or out['write_callable']:
-        raise ConsoleError('独立巡检控制台目前仅观察结果，尚未开放调度回写')
+        raise ConsoleError('旧版回写开关已停用，请使用质量隔离策略')
+    if 'isolation' in out:
+        p=out['isolation']
+        if not isinstance(p,dict) or set(p)!={'enabled','failure_rounds','cooldown_minutes','min_available'}:
+            raise ConsoleError('隔离策略字段不完整')
+        boolean(p['enabled'],'自动隔离')
+        integer(p['failure_rounds'],'连续失败轮数',1,10)
+        integer(p['cooldown_minutes'],'冷却分钟数',5,10080)
+        integer(p['min_available'],'分组最低可用账号数',1,100)
     return out

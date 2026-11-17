@@ -48,7 +48,7 @@ class Gateway(BaseHTTPRequestHandler):
                 'status': 'active', 'group_id': 3, 'group': {'name': 'Plus'}}], 'pages': 1, 'total': 1})
         if path == '/api/v1/keys/7':
             if self.headers.get('Authorization') != 'Bearer ' + USER: return self.send({}, 401)
-            return self.send({'id': 7, 'key': 'fixture-user-secret-123456', 'status': 'active'})
+            return self.send({'id': 7, 'key': 'fixture-user-secret-123456', 'status': 'active','group_id':3})
         if path.startswith('/api/v1/keys/'):
             return self.send({}, 404)
         if path == '/v1/models':
@@ -131,7 +131,7 @@ class ConsoleTests(unittest.TestCase):
         plan = plan or self.plan
         preview = self.service.store.resolve(plan)
         payload = {'plan_id': plan['id'], 'request_key': key, 'confirmed': True,
-                   **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision')}}
+                   **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision', 'questions_revision')}}
         return self.service.enqueue(payload, ADMIN, '1'), payload
     def test_public_admin_and_legacy_boundaries(self):
         status, data, headers = self.call('/api/public/overview')
@@ -246,5 +246,37 @@ class ConsoleTests(unittest.TestCase):
         restarted=ConsoleService(self.root,start=False)
         self.assertEqual(len(restarted.store.results()),2)
         self.assertEqual(restarted.store.plans()[0]['revision'],self.plan['revision'])
+
+    def test_v2_catalog_permissions_snapshot_confirmation_and_public_history(self):
+        status,bootstrap,_=self.call('/api/admin/bootstrap',token=ADMIN)
+        self.assertEqual(status,200)
+        doc=bootstrap['questions'];doc['value'][1]['prompt']='请画一只骑自行车的鹈鹕，仅返回HTML和SVG。'
+        payload={'value':doc['value'],'revision':doc['revision']}
+        self.assertEqual(self.call('/api/admin/questions',payload,USER,'PUT')[0],403)
+        job,preview_payload=self.enqueue()
+        self.assertEqual(self.call('/api/admin/questions',payload,ADMIN,'PUT')[0],200)
+        # A fresh request with an old preview cannot silently use a different bank.
+        stale={**preview_payload,'request_key':'stale-catalog-version'}
+        self.assertEqual(self.call('/api/admin/jobs',stale,ADMIN,'POST')[0],409)
+        self.service.execute(self.service.store.job(job['id']))
+        sent=Gateway.requests[0][1]['messages'][-1]['content']
+        self.assertIn('鸟喙',sent) # Old snapshot survived the edited prompt.
+        group=self.service.public.projection()['groups'][0]
+        status,history,_=self.call('/api/public/groups/'+group['id']+'/history')
+        self.assertEqual(status,200);self.assertEqual(history['runs'][0]['source'],'admin')
+        raw=json.dumps(history)
+        for hidden in ('account_id','private-mail','fixture-account','credentials'):self.assertNotIn(hidden,raw)
+
+    def test_v2_model_400_is_archived_as_request_error(self):
+        def unsupported(h):
+            body=json.loads(h.rfile.read(int(h.headers['Content-Length'])))
+            Gateway.requests.append(('fixture',body))
+            return h.send({'error':{'message':'model is not supported'}},400)
+        with patch.object(Gateway,'do_POST',unsupported):
+            job,_=self.enqueue();self.service.execute(self.service.store.job(job['id']))
+        self.assertEqual(len(Gateway.requests),1)
+        result=self.service.store.results()[0]['value']
+        self.assertEqual(result['status'],'error');self.assertEqual(result['error_code'],'MODEL_UNSUPPORTED')
+        self.assertEqual(self.service.store.job(job['id'])['status'],'completed_with_errors')
 
 if __name__ == '__main__': unittest.main()

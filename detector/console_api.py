@@ -6,7 +6,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from .console_config import ConsoleError
 from .session_auth import admin_identity
-from .self_service import CATALOG
 
 
 def dispatch(handler, path):
@@ -82,6 +81,10 @@ def public(handler, service, path):
         if result is None:
             raise ConsoleError('结果不存在或未公开', 404)
         handler.send_json(result)
+    elif match := re.fullmatch(r'/api/public/groups/([a-f0-9]{24})/history',path):
+        handler.send_json({'runs':service.public.history(match[1])})
+    elif match := re.fullmatch(r'/api/public/records/([a-f0-9]{24})',path):
+        handler.send_json(service.public.record(match[1]))
     elif match := re.fullmatch(r'/api/public/runs/([a-f0-9]{24})(/artifact)?', path):
         value = service.public.run(match[1], artifact=bool(match[2]))
         if match[2]:
@@ -108,7 +111,7 @@ def user(handler, service, path, body, token, actor):
         if path == '/api/user/me':
             return handler.send_json({'role': 'user', 'id': actor})
         if path == '/api/user/questions':
-            return handler.send_json({'questions': CATALOG})
+            return handler.send_json({'questions': [{k:q[k] for k in ('id','title','description','rounds','version')} for q in service.store.document('questions')['value'] if q['enabled']]})
         if path == '/api/user/keys':
             return handler.send_json({'keys': service.self_service.keys(token)})
         if path == '/api/user/jobs':
@@ -125,9 +128,9 @@ def user(handler, service, path, body, token, actor):
         return handler.send_json(service.self_service.stop_job(match[1], actor))
     match = re.fullmatch(r'/api/user/jobs/([a-f0-9]{32})/publication', path)
     if match and method == 'PUT':
-        if set(body) != {'public'}:
+        if set(body)-{'share_content'} != {'public'}:
             raise ConsoleError('请求字段不完整或包含未知字段')
-        return handler.send_json(service.self_service.publish(match[1], actor, body['public']))
+        return handler.send_json(service.self_service.publish(match[1], actor, body['public'],body.get('share_content',False)))
     raise ConsoleError('接口不存在或不支持此方法', 404)
 
 
@@ -145,12 +148,23 @@ def admin(h, s, path, body, token, actor):
         if path == '/api/admin/bootstrap':
             return h.send_json({'settings': store.document('settings'), 'inventory': store.inventory(),
                                 'plans': store.plans(), 'jobs': [s.job_summary(j) for j in store.jobs()],
+                                'questions':store.document('questions'),'isolations':s.isolation.records(),
                                 'publication': store.document('publication'), 'capabilities': s.capabilities()})
         if match := re.fullmatch(r'/api/admin/jobs/([a-f0-9]{32})', path):
             return h.send_json({'job': s.job_summary(store.job(match[1])), 'results': s.admin_results(match[1])})
     if path == '/api/admin/inventory/sync' and method == 'POST':
         fields(body, [])
         return h.send_json(s.sync_inventory(token, actor))
+    if path=='/api/admin/automation' and method=='PUT':
+        fields(body,['key'])
+        return h.send_json(s.save_automation(body['key'],actor))
+    if path=='/api/admin/questions' and method=='PUT':
+        fields(body,['value','revision'])
+        return h.send_json(store.save_document('questions',body['value'],body['revision'],actor))
+    if match:=re.fullmatch(r'/api/admin/isolations/(\d+)/release',path):
+        if method=='POST':
+            fields(body,[])
+            return h.send_json(s.isolation.acknowledge(int(match[1]),actor))
     if path in ('/api/admin/settings', '/api/admin/publication') and method == 'PUT':
         fields(body, ['value', 'revision'])
         if path.endswith('/settings'):

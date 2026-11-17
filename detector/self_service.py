@@ -4,7 +4,6 @@ The browser only ever receives masked key metadata. The raw key is fetched with
 the user's short-lived session and kept in worker memory for one job; it is
 never written to the console database, a URL, or a log.
 """
-from copy import deepcopy
 import logging
 import threading
 import time
@@ -16,21 +15,16 @@ from . import config
 from .console_config import ConsoleError
 from .console_store import ConsoleStore
 from .prompts import DRAWING_PROMPT, INSTRUCTIONS
-from .question_bank import ORIGINAL, grade
+from .question_bank import ORIGINAL
 from .quality_routing import retryable_request_error
 from .session_auth import user_identity
 from .upstream import redact
+from .quality_catalog import select, evaluate,verdict
 
 
-CATALOG = [
-    {'id': 'candy', 'title': '糖果双次校验', 'description': '原始逻辑题，连续两次独立回答都正确才算通过。', 'rounds': 2},
-    {'id': 'choice', 'title': '逻辑选择题', 'description': '固定选项题，检查基本约束推理和格式遵循。', 'rounds': 1},
-    {'id': 'numeric', 'title': '数值计算题', 'description': '固定算式题，检查计算和最终答案格式。', 'rounds': 1},
-    {'id': 'json', 'title': 'JSON 指令遵循', 'description': '要求只返回固定 JSON，检查结构化输出遵循。', 'rounds': 1},
-    {'id': 'drawing', 'title': 'SVG 完整性', 'description': '生成 HTML/SVG 作品并检查是否包含可渲染 SVG。', 'rounds': 1},
-]
-
-QUESTIONS = {
+# Only pre-v0.2 jobs lack immutable question snapshots. New jobs always use
+# quality_catalog, including the administrator's enabled/disabled choices.
+LEGACY_QUESTIONS = {
     'candy': ORIGINAL,
     'choice': {'id': 'logic-choice', 'title': '逻辑选择题', 'prompt': '有 3 个盒子，只有一个盒子里有球。甲说球在 1 号，乙说球不在 1 号，丙说球在 2 号。已知三人中只有一人说真话，球在哪个盒子？请最后一行严格使用“最终答案：X”，X 只写 1、2 或 3。', 'instructions': INSTRUCTIONS['candy'], 'kind': 'choice', 'choices': ['1', '2', '3'], 'expected': '3', 'version': 'self-choice-v1'},
     'numeric': {'id': 'numeric-17x19', 'title': '数值计算题', 'prompt': '计算 17 × 19。请最后一行严格使用“最终答案：N”，N 为整数。', 'instructions': INSTRUCTIONS['candy'], 'kind': 'number', 'expected': '323', 'unit': '', 'version': 'self-numeric-v1'},
@@ -156,7 +150,7 @@ class SelfService:
         return {'key': selected, 'models': sorted(models, key=lambda x: x['id'])[:500]}
 
     def create(self, token, user_id, payload):
-        if not isinstance(payload, dict) or set(payload) != {'api_key_id', 'model', 'effort', 'kinds', 'public'}:
+        if not isinstance(payload, dict) or set(payload)-{'share_content'} != {'api_key_id', 'model', 'effort', 'kinds', 'public'}:
             raise ConsoleError('自助检测参数不完整')
         keys = self.keys(token)
         selected = next((k for k in keys if k['id'] == payload['api_key_id']), None)
@@ -167,11 +161,12 @@ class SelfService:
             raise ConsoleError('模型名称无效')
         effort = payload['effort'] if payload['effort'] in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max') else 'medium'
         kinds = payload['kinds']
-        if not isinstance(kinds, list) or not kinds or len(kinds) > len(CATALOG) or any(k not in QUESTIONS for k in kinds):
-            raise ConsoleError('请选择有效检测题目')
+        questions=select(self.store,kinds)
         if type(payload['public']) is not bool:
             raise ConsoleError('公开选项无效')
-        job = self.store.create_self_job(user_id, selected['id'], selected['name'], model, effort, kinds, payload['public'])
+        if type(payload.get('share_content',False)) is not bool: raise ConsoleError('作品公开选项无效')
+        job = self.store.create_self_job(user_id, selected['id'], selected['name'], model, effort, kinds, payload['public'],
+            questions=questions,group_id=selected['group_id'],group_name=selected['group_name'],share_content=payload.get('share_content',False))
         self.tokens[job['id']] = token
         self.wake.set()
         return self.summary(job)
@@ -180,7 +175,8 @@ class SelfService:
         rows = job['results']
         return {k: job[k] for k in ('id', 'status', 'model', 'effort', 'key_name', 'public', 'created_at', 'started_at', 'finished_at', 'message')} | {
             'api_key_id': job['api_key_id'], 'kinds': job['kinds'], 'results': rows,
-            'total': sum(2 if k == 'candy' else 1 for k in job['kinds']),
+            'group_name':job.get('group_name',''),
+            'total':len(job['kinds']),
             'completed': len(rows), 'public_id': job['id'] if job['public'] else None}
 
     def jobs(self, user_id):
@@ -192,13 +188,14 @@ class SelfService:
             raise ConsoleError('只能查看自己的自助检测记录', 403)
         return self.summary(job)
 
-    def publish(self, ident, user_id, value):
+    def publish(self, ident, user_id, value, share_content=False):
         job = self.store.self_job(ident)
         if str(job['user_id']) != str(user_id):
             raise ConsoleError('只能修改自己的检测结果', 403)
         if type(value) is not bool:
             raise ConsoleError('公开选项无效')
-        self.store.update_self_job(ident, public=value)
+        if type(share_content) is not bool: raise ConsoleError('作品公开选项无效')
+        self.store.update_self_job(ident, public=value,share_content=share_content)
         return self.summary(self.store.self_job(ident))
 
     def stop_job(self, ident, user_id):
@@ -288,33 +285,38 @@ class SelfService:
             identity = self.identity(session_token)
             if str(identity['id']) != str(job['user_id']):
                 raise ConsoleError('登录账号已变更，请重新创建检测', 403)
-            key = self._owned_key(session_token, job['api_key_id'])['key']
+            selected=self._owned_key(session_token, job['api_key_id'])
+            if job.get('group_id') is not None and selected.get('group_id')!=job['group_id']:
+                raise ConsoleError('Key 所属分组已变更，请重新创建检测',409)
+            key = selected['key']
             rows = []
-            for kind in job['kinds']:
-                q = deepcopy(QUESTIONS[kind])
-                count = 2 if kind == 'candy' else 1
+            questions=job.get('questions') or [{**LEGACY_QUESTIONS[k],'id':k,'rounds':2 if k=='candy' else 1} for k in job['kinds']]
+            for q in questions:
+                if self.store.self_job(ident)['status']=='cancelled': return
+                kind=q['id'];count=q['rounds'];started=time.monotonic()
                 answers = []
                 for round_no in range(count):
+                    if self.store.self_job(ident)['status']=='cancelled': return
                     try:
                         text = self._call(key, job['model'], job['effort'], q, uuid.uuid4().hex)
-                        if kind == 'drawing':
-                            status = 'pass' if '<svg' in text.lower() and '</svg' in text.lower() else 'fail'
-                            answer, error = None, None
-                        else:
-                            status, answer = grade(q, text)
-                            error = None if status in ('pass', 'fail') else '未识别明确答案'
+                        status,answer=evaluate(q,text)
+                        error='未识别明确答案' if status=='unknown' else None
                         answers.append({'round': round_no + 1, 'status': status, 'answer': answer,
-                                        'response': text[:12000], 'error': error})
+                                        'response': redact(text,[key])[:100000], 'error': error})
                     except ConsoleError as exc:
                         answers.append({'round': round_no + 1, 'status': 'error', 'error_code': exc.code or 'REQUEST_FAILED', 'error': exc.message})
                         if not retryable_request_error(exc.code):
                             break
                 statuses = [a['status'] for a in answers]
-                final = 'pass' if all(s == 'pass' for s in statuses) else 'fail' if any(s == 'fail' for s in statuses) else 'error'
+                final = verdict(statuses)
                 rows.append({'kind': kind, 'title': q['title'], 'status': final, 'rounds': answers,
+                             'question_type':q['kind'],'bank_version':q.get('version'),'duration':round(time.monotonic()-started,2),'finished_at':time.time(),
                              'error_code': next((a.get('error_code') for a in answers if a.get('error_code')), None)})
+                if self.store.self_job(ident)['status']=='cancelled': return
+                self.store.update_self_job(ident,results=rows)
             request_errors = sum(a['status'] == 'error' for row in rows for a in row['rounds'])
             final_status = 'completed_with_errors' if request_errors else 'completed'
+            if self.store.self_job(ident)['status']=='cancelled': return
             self.store.update_self_job(ident, status=final_status, finished_at=time.time(), results=rows,
                                        message=('检测完成，但有 %d 项请求故障；请求故障不会判定为答错' % request_errors) if request_errors else '检测完成')
         except ConsoleError as exc:
