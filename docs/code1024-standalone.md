@@ -3,6 +3,16 @@
 本目录基于 `noonwake-ai/ai-drool-router` 提交 `a86d96a0e494a99437841a0c9fddf73c7b0c33aa` 二开，保留原 LGPL-3.0-or-later 许可与署名。
 不包含 Sub2API 补丁，不要求更换 Sub2API 程序；检测、SQLite、页面和发布由本服务独立维护。
 
+本二开由 `daQzi/code1024-drool-router` 独立发布，首个版本为 `v0.1.0`。安装该版本时使用本仓库源码：
+
+```sh
+git clone --branch v0.1.0 https://github.com/daQzi/code1024-drool-router.git
+cd code1024-drool-router
+```
+
+已有部署升级时保留自己的 `config.json`、`credentials/` 和数据卷，先备份再切换程序镜像。
+生产 `/quality/` 子路径部署仍须以 `DROOL_BASE=/quality/` 构建前端。
+
 ## 页面地址
 
 - 独立打开：`http://127.0.0.1:4191/`

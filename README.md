@@ -1,5 +1,5 @@
-> 本地独立嵌入版：配套 code1024 的玻璃主题与深浅色，新增 iframe 域名白名单、访问口令、任务控制和检测参考。
-> 不修改 Sub2API。先看 [独立服务部署说明](docs/code1024-standalone.md)。本版定时与回写默认关闭；下方保留上游说明，配置差异以独立说明为准。
+> **code1024-drool-router**：基于 AI Drool Router 二开的独立质量服务，提供公开检测结果、管理员控制台与使用个人 Key 的自助检测，配套 code1024 的主题和嵌入页面。
+> 二开仓库：[daQzi/code1024-drool-router](https://github.com/daQzi/code1024-drool-router)。部署本版请先看 [独立服务部署说明](docs/code1024-standalone.md)。定时与回写默认关闭；下方保留上游说明，配置差异以独立说明为准。
 
 <div align="center">
 
