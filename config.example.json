@@ -75,6 +75,7 @@
     "max_attempts": 3
   },
   "upstream": {
+    "codex_version": "0.169.0",
     "_comment": "私有 CA 的 PEM 路径；留空使用系统信任库。企业内网套了 TLS 检查代理时填这里。",
     "ca_bundle": ""
   },

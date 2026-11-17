@@ -114,6 +114,7 @@ DEFAULTS = {
         'max_attempts': 3,
     },
     'upstream': {
+        'codex_version': '0.169.0',
         # Path to a PEM bundle used to verify upstream TLS. Empty = the normal
         # system/certifi trust store. Set this when the gateway sits behind a
         # TLS-inspecting proxy, or when probing an internal endpoint with a

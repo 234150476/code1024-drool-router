@@ -73,11 +73,15 @@ class SelfService:
                                            timeout=(5, 45), allow_redirects=False)
                 if response.status_code != 200:
                     raise ConsoleError('code1024 返回 HTTP %d' % response.status_code, 502)
+                if 'json' not in response.headers.get('Content-Type', '').lower():
+                    raise ConsoleError('code1024 接口未返回 JSON，请检查网关地址与接口路径', 502)
                 body = response.json()
         except ConsoleError:
             raise
         except (requests.RequestException, ValueError, TypeError):
             raise ConsoleError('无法连接 code1024，请稍后重试', 502) from None
+        if not isinstance(body, dict):
+            raise ConsoleError('code1024 返回的数据格式无效', 502)
         if body.get('code', 0) != 0:
             raise ConsoleError('code1024 拒绝了本次请求', 502)
         return body.get('data', body)
@@ -94,10 +98,18 @@ class SelfService:
 
     def keys(self, token):
         self.identity(token)
-        data = self._request(token, 'GET', '/api/v1/api-keys', params={'page': 1, 'page_size': 100})
-        entries = data.get('items', []) if isinstance(data, dict) else data
-        if not isinstance(entries, list):
-            raise ConsoleError('code1024 返回的 Key 清单格式无效', 502)
+        entries = []
+        for page in range(1, 101):
+            data = self._request(token, 'GET', '/api/v1/keys', params={'page': page, 'page_size': 100})
+            items = data.get('items') if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                raise ConsoleError('code1024 返回的 Key 清单格式无效', 502)
+            entries.extend(items)
+            pages = data.get('pages', page)
+            if type(pages) is not int or not page <= pages <= 100:
+                raise ConsoleError('code1024 返回的 Key 分页信息无效', 502)
+            if page >= pages:
+                break
         result = []
         for item in entries:
             if not isinstance(item, dict) or not isinstance(item.get('id'), int):
@@ -110,25 +122,32 @@ class SelfService:
                            'expires_at': item.get('expires_at')})
         return result
 
+    def _owned_key(self, token, key_id):
+        # The gateway verifies ownership on this user endpoint. Fetch again at
+        # execution time so a deleted or disabled key cannot use a stale list.
+        raw = self._request(token, 'GET', '/api/v1/keys/' + str(int(key_id)))
+        if not isinstance(raw, dict) or raw.get('id') != int(key_id) or raw.get('status') != 'active':
+            raise ConsoleError('只能选择本人有效的 API Key', 403)
+        if not isinstance(raw.get('key'), str) or not raw['key']:
+            raise ConsoleError('无法读取所选 Key', 403)
+        return raw
+
     def models(self, token, key_id):
         keys = self.keys(token)
         selected = next((k for k in keys if k['id'] == int(key_id)), None)
         if not selected or selected.get('status') != 'active':
             raise ConsoleError('只能选择本人有效的 API Key', 403)
-        raw = self._request(token, 'GET', '/api/v1/api-keys/' + str(int(key_id)))
-        raw_key = raw.get('key') if isinstance(raw, dict) else ''
-        if not raw_key:
-            raise ConsoleError('无法读取所选 Key', 403)
+        raw_key = self._owned_key(token, key_id)['key']
         try:
             with requests.Session() as session:
                 session.trust_env = False
                 response = session.get(str(config.get('base_url') or '').rstrip('/') + '/v1/models',
                                        headers={'Authorization': 'Bearer ' + raw_key}, timeout=(5, 30), allow_redirects=False)
                 if response.status_code != 200:
-                    return {'key': selected, 'models': []}
+                    raise ConsoleError('模型清单加载失败：code1024 返回 HTTP %d；可手动填写模型名称' % response.status_code, 502)
                 data = response.json()
         except (requests.RequestException, ValueError, TypeError):
-            data = {}
+            raise ConsoleError('模型清单加载失败；可手动填写模型名称', 502) from None
         entries = data.get('data', []) if isinstance(data, dict) else data
         models = []
         for item in entries if isinstance(entries, list) else []:
@@ -267,12 +286,9 @@ class SelfService:
             return
         try:
             identity = self.identity(session_token)
-            key_list = self._request(session_token, 'GET', '/api/v1/api-keys', params={'page': 1, 'page_size': 100})
-            entries = key_list.get('items', []) if isinstance(key_list, dict) else []
-            selected = next((x for x in entries if isinstance(x, dict) and x.get('id') == job['api_key_id']), None)
-            key = selected.get('key') if selected else ''
-            if not key:
-                raise ConsoleError('无法读取所选 Key，请刷新后重试', 403)
+            if str(identity['id']) != str(job['user_id']):
+                raise ConsoleError('登录账号已变更，请重新创建检测', 403)
+            key = self._owned_key(session_token, job['api_key_id'])['key']
             rows = []
             for kind in job['kinds']:
                 q = deepcopy(QUESTIONS[kind])

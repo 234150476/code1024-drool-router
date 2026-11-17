@@ -30,8 +30,9 @@ STREAM_IDLE_SECONDS = int(config.get('budgets.idle_seconds', 120))
 GEMINI_HIGH_IDLE_SECONDS = int(config.get('budgets.gemini_high_idle_seconds', 300))
 # Gemini's generation cap includes thinking, even for a short final answer.
 GEMINI_MAX_OUTPUT_TOKENS = 32768
-# Official @openai/codex stable dist-tag verified on 2026-09-13. This is not a CLI process.
-CODEX_VERSION = '0.154.0'
+# Compatible with the owning gateway's current Codex identity. This is an HTTP
+# adapter; an old client version can hide models the subscription supports.
+CODEX_VERSION = '0.169.0'
 CLIENT_INFO = {'transport':'direct-http', 'codex_protocol_version':CODEX_VERSION}
 # Official https://x.ai/cli/stable read on 2026-09-13; HTTP compatibility, not a CLI process.
 GROK_VERSION = '1.0.30'
@@ -62,7 +63,7 @@ PROTOCOL_LABELS = {
 def client_info(platform):
     """Describe the client identity used for a platform, for the audit trail."""
     if platform == 'openai':
-        return CLIENT_INFO
+        return {**CLIENT_INFO, 'codex_protocol_version': codex_version()}
     protocol = config.protocol_for(platform)
     info = {'transport': 'direct-http', 'protocol': PROTOCOL_LABELS.get(protocol, protocol)}
     if protocol == 'xai_responses':
@@ -79,6 +80,13 @@ class ProbeError(Exception):
         self.timings = timings or {}
         self.tokens = tokens or {}
         super().__init__(code)
+
+
+def codex_version():
+    value = config.get('upstream.codex_version') or CODEX_VERSION
+    if not isinstance(value, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?', value):
+        raise ProbeError('CLIENT_CONFIG_INVALID', 'Codex 客户端版本配置无效')
+    return value
 
 
 def request_budget(platform, kind, fallback=REQUEST_TOTAL_SECONDS):
@@ -635,9 +643,10 @@ def _openai_oauth_request(account, request_id, model, effort, prompt, instructio
     token = creds.get('access_token')
     if not token:
         raise ProbeError('MISSING_ACCESS_TOKEN', '账户没有可用的访问令牌')
+    version = codex_version()
     headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream',
-               'User-Agent': f'codex-tui/{CODEX_VERSION} (Ubuntu 22.4.0; x86_64) xterm-256color',
-               'Originator': 'codex-tui', 'Version': CODEX_VERSION,
+               'User-Agent': f'codex_cli_rs/{version} (Ubuntu 22.4.0; x86_64) xterm-256color',
+               'Originator': 'codex_cli_rs', 'Version': version,
                'Authorization': 'Bearer ' + token,
                'OpenAI-Beta': 'responses=experimental',
                'session_id': request_id}

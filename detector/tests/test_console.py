@@ -42,6 +42,18 @@ class Gateway(BaseHTTPRequestHandler):
             auth = self.headers.get('Authorization')
             if auth not in ('Bearer ' + ADMIN, 'Bearer ' + USER): return self.send({}, 401)
             return self.send({'id': 1, 'role': 'admin' if auth == 'Bearer ' + ADMIN else 'user', 'status': 'active'})
+        if path == '/api/v1/keys':
+            if self.headers.get('Authorization') != 'Bearer ' + USER: return self.send({}, 401)
+            return self.send({'items': [{'id': 7, 'key': 'fixture-user-secret-123456', 'name': 'My Key',
+                'status': 'active', 'group_id': 3, 'group': {'name': 'Plus'}}], 'pages': 1, 'total': 1})
+        if path == '/api/v1/keys/7':
+            if self.headers.get('Authorization') != 'Bearer ' + USER: return self.send({}, 401)
+            return self.send({'id': 7, 'key': 'fixture-user-secret-123456', 'status': 'active'})
+        if path.startswith('/api/v1/keys/'):
+            return self.send({}, 404)
+        if path == '/v1/models':
+            if self.headers.get('Authorization') != 'Bearer fixture-user-secret-123456': return self.send({}, 401)
+            return self.send([{'id': 'fixture-model'}])
         if path == '/api/v1/admin/accounts': return self.send({'items': ACCOUNTS, 'total': 2})
         if path == '/api/v1/admin/groups/all': return self.send(GROUPS)
         if path == '/api/v1/admin/accounts/data':
@@ -132,6 +144,23 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.call('/api/admin/inventory/sync', {}, ADMIN, origin='https://evil.test')[0], 403)
         self.assertEqual(self.call('/api/admin/settings', {'value': [], 'revision': 1}, ADMIN, 'PUT')[0], 400)
         self.assertEqual(len(Gateway.requests), 0)
+
+    def test_self_service_loads_own_keys_models_questions_and_history_over_http(self):
+        status, data, headers = self.call('/api/user/keys', token=USER)
+        self.assertEqual(status, 200)
+        self.assertIn('application/json', headers['Content-Type'])
+        self.assertEqual(data['keys'][0]['id'], 7)
+        self.assertEqual(data['keys'][0]['group_name'], 'Plus')
+        self.assertNotIn('fixture-user-secret-123456', json.dumps(data))
+        status, data, _ = self.call('/api/user/keys/7/models', token=USER)
+        self.assertEqual(status, 200)
+        self.assertEqual(data['models'][0]['id'], 'fixture-model')
+        self.assertNotIn('fixture-user-secret-123456', json.dumps(data))
+        self.assertEqual(self.call('/api/user/keys/8/models', token=USER)[0], 403)
+        self.assertEqual(self.call('/api/user/questions', token=USER)[0], 200)
+        self.assertEqual(self.call('/api/user/jobs', token=USER)[1]['jobs'], [])
+        for path in ('/api/user/keys', '/api/user/questions', '/api/user/jobs'):
+            self.assertEqual(self.call(path)[0], 401)
     def test_scope_dedup_and_snapshots_revision_idempotence(self):
         value = deepcopy(self.plan['value']); value['scope']['group_ids'] = [3,4]
         plan = self.service.save_plan(value, '1', self.plan['id'], self.plan['revision'])

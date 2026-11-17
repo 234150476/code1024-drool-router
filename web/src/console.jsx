@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {Activity, ArrowLeft, ExternalLink, RefreshCw, Search, Settings2, X} from 'lucide-react';
-import {adminFetch, apiFetch, hostSession} from './access.js';
-import {endpoint} from './endpoints.js';
+import {hostSession} from './access.js';
+import {request, loadSelfData} from './console-client.js';
 import {ThemeSwitch, QualityGuide} from './workspace.jsx';
 import './console.css';
 
@@ -9,14 +9,6 @@ const LABELS={pass:'通过',fail:'答题失败',error:'请求故障',quota:'限�
 const kindName=k=>k==='candy'?'逻辑双题':'SVG 完整性';
 const date=t=>t?new Date(t*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'尚未检测';
 const copy=v=>JSON.parse(JSON.stringify(v));
-async function request(path,method='GET',body,admin=true){
-  const options={method,headers:{},cache:'no-store'};
-  if(body!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
-  const response=await (admin===true?adminFetch:admin===false?fetch:apiFetch)(endpoint(path),options);
-  const value=await response.json();
-  if(!response.ok){const error=Error(value.error||'请求失败，请刷新重试');error.status=response.status;throw error;}
-  return value;
-}
 function Check({label,value,onChange,disabled=false}){return <label className="qc-check"><input type="checkbox" checked={Boolean(value)} onChange={e=>onChange(e.target.checked)} disabled={disabled}/><span>{label}</span></label>;}
 function Field({label,value,onChange,type='text',...rest}){return <label className="qc-field"><span>{label}</span><input type={type} value={value??''} onChange={e=>onChange(type==='number'?Number(e.target.value):e.target.value)} {...rest}/></label>;}
 function Select({label,value,onChange,children}){return <label className="qc-field"><span>{label}</span><select value={value} onChange={e=>onChange(e.target.value)}>{children}</select></label>;}
@@ -26,9 +18,20 @@ function Empty({children}){return <div className="qc-empty">{children}</div>;}
 function SelfPage({onMessage}){
   const [keys,setKeys]=useState([]),[questions,setQuestions]=useState([]),[models,setModels]=useState([]),[jobs,setJobs]=useState([]);
   const [keyId,setKeyId]=useState(''),[model,setModel]=useState(''),[effort,setEffort]=useState('medium'),[kinds,setKinds]=useState(['candy','drawing']),[publicResult,setPublicResult]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  const load=async()=>{const [k,q,j]=await Promise.all([request('/api/user/keys','GET',undefined,'user'),request('/api/user/questions','GET',undefined,'user'),request('/api/user/jobs','GET',undefined,'user')]);setKeys(k.keys||[]);setQuestions(q.questions||[]);setJobs(j.jobs||[]);if(!keyId&&k.keys?.[0])setKeyId(String(k.keys[0].id));};
+  const load=async()=>{
+    setError('');
+    const data=await loadSelfData();
+    if(data.keys.status==='fulfilled'){
+      const available=(data.keys.value.keys||[]).filter(k=>k.status==='active');
+      setKeys(available);setKeyId(current=>available.some(k=>String(k.id)===current)?current:available[0]?String(available[0].id):'');
+    }else{setKeys([]);setKeyId('');}
+    if(data.questions.status==='fulfilled')setQuestions(data.questions.value.questions||[]);
+    if(data.jobs.status==='fulfilled')setJobs(data.jobs.value.jobs||[]);
+    const failures=Object.values(data).filter(v=>v.status==='rejected');
+    if(failures.length)setError([...new Set(failures.map(v=>v.reason.message))].join('；'));
+  };
   useEffect(()=>{load().catch(e=>setError(e.message));},[]);
-  useEffect(()=>{if(!keyId)return;request('/api/user/keys/'+keyId+'/models','GET',undefined,'user').then(v=>{setModels(v.models||[]);if(!model&&v.models?.[0])setModel(v.models[0].id);}).catch(()=>setModels([]));},[keyId]);
+  useEffect(()=>{let alive=true;setModels([]);setModel('');if(keyId)request('/api/user/keys/'+keyId+'/models','GET',undefined,'user').then(v=>{if(alive){setModels(v.models||[]);setModel(v.models?.[0]?.id||'');}}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[keyId]);
   const selected=keys.find(k=>String(k.id)===String(keyId));
   const toggle=k=>setKinds(v=>v.includes(k)?v.filter(x=>x!==k):[...v,k]);
   async function run(){setBusy(true);setError('');try{await request('/api/user/jobs','POST',{api_key_id:Number(keyId),model,effort,kinds,public:publicResult},'user');await load();onMessage('自助检测已进入队列，结果会出现在“我的记录”。');}catch(e){setError(e.message);}finally{setBusy(false);}}

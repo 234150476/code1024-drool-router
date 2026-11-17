@@ -53,6 +53,20 @@ class ProtocolResolutionTests(unittest.TestCase):
 
 
 class GenericAdapterTests(unittest.TestCase):
+    def test_oauth_identity_uses_configured_client_version_and_matching_originator(self):
+        a = {**account('openai'), 'type': 'oauth', 'credentials': {'access_token': 'fixture-token',
+             'chatgpt_account_id': 'fixture-workspace'}}
+        with patch.dict(config.CONFIG, {'upstream': {'codex_version': '0.169.1'}}):
+            url, headers, payload = build_request(a, 'candy')
+            self.assertEqual(headers['Version'], '0.169.1')
+            self.assertTrue(headers['User-Agent'].startswith('codex_cli_rs/0.169.1 '))
+            self.assertEqual(headers['Originator'], 'codex_cli_rs')
+            self.assertEqual(client_info('openai')['codex_protocol_version'], '0.169.1')
+            self.assertEqual(headers['ChatGPT-Account-Id'], 'fixture-workspace')
+        with patch.dict(config.CONFIG, {'upstream': {'codex_version': 'bad\r\nversion'}}):
+            with self.assertRaises(ProbeError):
+                build_request(a, 'candy')
+
     def test_a_new_platform_needs_config_only(self):
         with with_platform('moonshot', MOONSHOT):
             url, headers, payload = build_request(

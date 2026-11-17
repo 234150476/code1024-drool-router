@@ -3,10 +3,10 @@
 本目录基于 `noonwake-ai/ai-drool-router` 提交 `a86d96a0e494a99437841a0c9fddf73c7b0c33aa` 二开，保留原 LGPL-3.0-or-later 许可与署名。
 不包含 Sub2API 补丁，不要求更换 Sub2API 程序；检测、SQLite、页面和发布由本服务独立维护。
 
-本二开由 `daQzi/code1024-drool-router` 独立发布，当前版本为 `v0.1.1`。安装该版本时使用本仓库源码：
+本二开由 `daQzi/code1024-drool-router` 独立发布，当前版本为 `v0.1.2`。安装该版本时使用本仓库源码：
 
 ```sh
-git clone --branch v0.1.1 https://github.com/daQzi/code1024-drool-router.git
+git clone --branch v0.1.2 https://github.com/daQzi/code1024-drool-router.git
 cd code1024-drool-router
 ```
 
@@ -90,6 +90,9 @@ npm --prefix web run build
 ```
 
 空 group_ids/group_names 表示该平台所有分组。按实际账号适配器验证模型，不按名字猜能力。
+`upstream.codex_version` 可配置 Codex HTTP 客户端版本（当前默认 `0.169.0`），应与宿主网关生效版本保持一致。
+旧客户端可能拿到较小的模型清单并被拒绝使用账号实际拥有的模型；这种 400 不代表账号套餐为 Free。
+用户自助检测通过 `/api/v1/keys` 读取本人 Key，浏览器仅获取脱敏元数据。
 管理员凭据存 credentials/sub2api-admin，设置 SUB2API_ADMIN_KEY_FILE 为该文件的绝对路径。
 用 `openssl rand -hex 24 > credentials/web-token` 生成服务口令，DROOL_WEB_TOKEN_FILE 指向它。
 也支持 SUB2API_ADMIN_KEY / DROOL_WEB_TOKEN 环境变量，服务口令至少 24 字符。
