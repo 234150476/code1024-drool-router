@@ -145,6 +145,34 @@ class ConsoleTests(unittest.TestCase):
         payload['request_key'] = 'fixture-request-002'
         with self.assertRaises(ConsoleError): self.service.enqueue(payload, ADMIN, '1')
         self.assertEqual(len(Gateway.requests), 0)
+    def test_public_groups_hide_account_metadata_and_legacy_account_routes(self):
+        job, _ = self.enqueue()
+        self.service.execute(self.service.store.job(job['id']))
+        document = self.service.store.document('publication')
+        names = deepcopy(document['value'])
+        names['account_names']['1'] = 'private-account-alias'
+        self.service.store.save_document('publication', names, document['revision'], '1')
+        group_id = self.service.store.public_id('group', 'g3')
+        account_id = self.service.store.public_id('account', 'g3:1')
+        for token in (None, USER, ADMIN):
+            for path in ('/api/public/overview', '/api/public/groups',
+                         '/api/public/overview?include_accounts=true', '/api/public/overview?hours=1'):
+                status, data, _ = self.call(path, token=token)
+                self.assertEqual(status, 200)
+                group = data['groups'][0]
+                self.assertEqual(set(group), {'id', 'name', 'method', 'profiles'})
+                self.assertEqual(group['profiles'][0]['pass'], 1)
+                for hidden in ('private-account-alias', 'private-mail', 'account_count', account_id):
+                    self.assertNotIn(hidden, json.dumps(data))
+            self.assertEqual(self.call('/api/public/accounts/'+account_id+'/results', token=token)[0], 404)
+        status, group, _ = self.call('/api/public/groups/'+group_id+'/results')
+        self.assertEqual(status, 200)
+        self.assertEqual(set(group), {'id', 'name', 'method', 'profiles'})
+        detail_path = '/api/admin/jobs/'+job['id']
+        self.assertEqual(self.call(detail_path, token=USER)[0], 403)
+        status, detail, _ = self.call(detail_path, token=ADMIN)
+        self.assertEqual(status, 200)
+        self.assertEqual(detail['results'][0]['account_name'], ACCOUNTS[0]['name'])
     def test_real_worker_selected_account_new_model_history_and_revocation(self):
         job, _ = self.enqueue(); self.service.execute(self.service.store.job(job['id']))
         result = self.service.store.job(job['id'])

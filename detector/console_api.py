@@ -76,10 +76,9 @@ def public(handler, service, path):
         if raw and raw not in ('1', '6', '24', '72', '168', '720'):
             raise ConsoleError('无效时间范围')
         handler.send_json(service.public.projection(int(raw) if raw else None))
-    elif match := re.fullmatch(r'/api/public/(groups|accounts)/([a-f0-9]{24})/results', path):
+    elif match := re.fullmatch(r'/api/public/groups/([a-f0-9]{24})/results', path):
         data = service.public.projection()
-        rows = data['groups'] if match[1] == 'groups' else [a for g in data['groups'] for a in g['accounts']]
-        result = next((row for row in rows if row['id'] == match[2]), None)
+        result = next((row for row in data['groups'] if row['id'] == match[1]), None)
         if result is None:
             raise ConsoleError('结果不存在或未公开', 404)
         handler.send_json(result)

@@ -31,6 +31,12 @@ class PublicResults:
         self.store = store
 
     def projection(self, hours=None):
+        value = self._projection(hours)
+        value['groups'] = [{key: group[key] for key in ('id', 'name', 'method', 'profiles')}
+                           for group in value['groups']]
+        return value
+
+    def _projection(self, hours=None):
         store = self.store
         plans = {p['id']: p for p in store.plans() if p['value']['published']}
         inventory = store.inventory()['value']
@@ -120,7 +126,7 @@ class PublicResults:
 
     def run(self, public_id, artifact=False):
         # Resolve only IDs that exist in the current public account projection.
-        if not any(r['id'] == public_id for g in self.projection()['groups'] for a in g['accounts'] for r in a['runs']):
+        if not any(r['id'] == public_id for g in self._projection()['groups'] for a in g['accounts'] for r in a['runs']):
             raise ConsoleError('结果不存在或未公开', 404)
         row = next((r for r in self.store.results() if self.store.public_id('run', r['id']) == public_id), None)
         if not row:

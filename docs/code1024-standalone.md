@@ -3,10 +3,10 @@
 本目录基于 `noonwake-ai/ai-drool-router` 提交 `a86d96a0e494a99437841a0c9fddf73c7b0c33aa` 二开，保留原 LGPL-3.0-or-later 许可与署名。
 不包含 Sub2API 补丁，不要求更换 Sub2API 程序；检测、SQLite、页面和发布由本服务独立维护。
 
-本二开由 `daQzi/code1024-drool-router` 独立发布，首个版本为 `v0.1.0`。安装该版本时使用本仓库源码：
+本二开由 `daQzi/code1024-drool-router` 独立发布，当前版本为 `v0.1.1`。安装该版本时使用本仓库源码：
 
 ```sh
-git clone --branch v0.1.0 https://github.com/daQzi/code1024-drool-router.git
+git clone --branch v0.1.1 https://github.com/daQzi/code1024-drool-router.git
 cd code1024-drool-router
 ```
 
@@ -209,6 +209,15 @@ cd web && node --test src/*.test.js
 
 ## 公开结果与管理员控制台（2026-11-17）
 
+自 `v0.1.1` 起，公开页固定按分组汇总，普通用户与匿名访客均不展示账号入口、账号别名、
+账号列表、账号数量或账号与结果的对应关系。公开 overview、groups 及分组详情接口使用同一字段白名单，
+旧的公开账号详情接口返回 404。历史 `show_accounts` 和账号别名配置保留兼容，不会扩大公开页的数据范围。
+管理员仍可按分组或指定账号执行检测，并在管理员任务详情中查看真实账号及对应结果。
+个人 Key 自助检测与用户主动公开的自测摘要保持独立，不暴露供应商账号信息。
+
+分组页按相同模型、推理等级与题库展示通过率、样本数、请求故障、限额、耗时和最近检测时间。
+请求故障与无样本不作为“降智”结论；底层仍为分组内账号直连探针，不能替代网关端到端质量检测。
+
 `/quality/` 现在默认打开公开结果，不要求服务口令或登录。管理员从 code1024 的
 `/custom/quality-inspection` 进入，宿主 JWT 经 `/api/v1/auth/me` 验证 active/admin 后，
 才能同步清单、保存业务参数、按分组或账号运行检测、停止后续请求以及设置公开内容。
@@ -242,7 +251,7 @@ cd web && node --test src/*.test.js
 新任务固定计划、参数版本和去重后的账号快照，每任务使用独立 worker 数据目录，避免局部检测删除其他历史。
 原 `/data/private/state.sqlite3` 原样保留；当前生产迁移前没有检测记录。
 
-公开 JSON 只包含明确发布的结果和账号别名。真实账号名、内部 ID、凭据、代理和原始异常不公开。
+公开汇总 JSON 只包含明确发布的分组和统计数据。账号别名、真实账号名、内部 ID、凭据、代理和原始异常不公开。
 答案与作品分别控制；每次访问详情和作品重新校验发布状态，撤回立即返回 404，响应为 no-store。
 作品使用 sandbox 与禁网 CSP。按分组表示组内账号直连表现，并非网关入口链路检测。
 
