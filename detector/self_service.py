@@ -15,9 +15,11 @@ import requests
 from . import config
 from .console_config import ConsoleError
 from .console_store import ConsoleStore
-from .prompts import CANDY_PROMPT, DRAWING_PROMPT, INSTRUCTIONS
+from .prompts import DRAWING_PROMPT, INSTRUCTIONS
 from .question_bank import ORIGINAL, grade
+from .quality_routing import retryable_request_error
 from .session_auth import user_identity
+from .upstream import redact
 
 
 CATALOG = [
@@ -233,7 +235,15 @@ class SelfService:
                         message = err.get('message', message) if isinstance(err, dict) else str(err)
                     except (ValueError, TypeError):
                         pass
-                    raise ConsoleError('HTTP %d：%s' % (response.status_code, message[:500]), 502)
+                    text = str(message)
+                    if response.status_code == 400:
+                        lowered = text.lower()
+                        code = 'MODEL_UNSUPPORTED' if 'model' in lowered and ('not supported' in lowered or 'unsupported' in lowered or 'support' in lowered) else 'INVALID_REQUEST'
+                    elif response.status_code in (401, 403):
+                        code = 'AUTHENTICATION_FAILED'
+                    else:
+                        code = 'HTTP_' + str(response.status_code)
+                    raise ConsoleError('HTTP %d：%s' % (response.status_code, redact(text, [key], True)[:500]), 502, code)
                 body = response.json()
                 text = self._content(body)
                 if not text:
@@ -280,13 +290,17 @@ class SelfService:
                         answers.append({'round': round_no + 1, 'status': status, 'answer': answer,
                                         'response': text[:12000], 'error': error})
                     except ConsoleError as exc:
-                        answers.append({'round': round_no + 1, 'status': 'error', 'error_code': 'REQUEST_FAILED', 'error': exc.message})
+                        answers.append({'round': round_no + 1, 'status': 'error', 'error_code': exc.code or 'REQUEST_FAILED', 'error': exc.message})
+                        if not retryable_request_error(exc.code):
+                            break
                 statuses = [a['status'] for a in answers]
                 final = 'pass' if all(s == 'pass' for s in statuses) else 'fail' if any(s == 'fail' for s in statuses) else 'error'
                 rows.append({'kind': kind, 'title': q['title'], 'status': final, 'rounds': answers,
                              'error_code': next((a.get('error_code') for a in answers if a.get('error_code')), None)})
-            self.store.update_self_job(ident, status='completed', finished_at=time.time(), results=rows,
-                                       message='检测完成；请求故障不会判定为答错')
+            request_errors = sum(a['status'] == 'error' for row in rows for a in row['rounds'])
+            final_status = 'completed_with_errors' if request_errors else 'completed'
+            self.store.update_self_job(ident, status=final_status, finished_at=time.time(), results=rows,
+                                       message=('检测完成，但有 %d 项请求故障；请求故障不会判定为答错' % request_errors) if request_errors else '检测完成')
         except ConsoleError as exc:
             self.store.update_self_job(ident, status='failed', finished_at=time.time(), message=exc.message)
         finally:

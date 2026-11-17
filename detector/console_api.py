@@ -65,25 +65,12 @@ def read_body(handler, limit):
 
 def public(handler, service, path):
     if path == '/api/public/self-results':
-        jobs = []
-        for job in service.store.self_jobs(public_only=True):
-            rows = [{'kind': r.get('kind'), 'title': r.get('title'), 'status': r.get('status'),
-                     'rounds': [{'round': x.get('round'), 'status': x.get('status')} for x in r.get('rounds', [])]}
-                    for r in job.get('results', [])]
-            jobs.append({'id': job['id'], 'key_name': job['key_name'], 'model': job['model'],
-                         'effort': job['effort'], 'status': job['status'], 'created_at': job['created_at'],
-                         'finished_at': job['finished_at'], 'results': rows})
-        return handler.send_json({'jobs': jobs})
+        return handler.send_json({'jobs': [public_self_job(job) for job in service.store.self_jobs(public_only=True)]})
     elif match := re.fullmatch(r'/api/public/self-results/([a-f0-9]{32})', path):
         job = service.store.self_job(match[1])
         if not job['public']:
             raise ConsoleError('结果不存在或未公开', 404)
-        rows = [{'kind': r.get('kind'), 'title': r.get('title'), 'status': r.get('status'),
-                 'rounds': [{'round': x.get('round'), 'status': x.get('status')} for x in r.get('rounds', [])]}
-                for r in job.get('results', [])]
-        return handler.send_json({'id': job['id'], 'key_name': job['key_name'], 'model': job['model'],
-                                  'effort': job['effort'], 'status': job['status'], 'created_at': job['created_at'],
-                                  'finished_at': job['finished_at'], 'results': rows})
+        return handler.send_json(public_self_job(job))
     elif path in ('/api/public/overview', '/api/public/groups'):
         raw = parse_qs(urlsplit(handler.path).query).get('hours', [''])[0]
         if raw and raw not in ('1', '6', '24', '72', '168', '720'):
@@ -106,6 +93,14 @@ def public(handler, service, path):
     else:
         raise ConsoleError('接口不存在', 404)
     return True
+
+
+def public_self_job(job):
+    rows = [{'kind': r.get('kind'), 'title': r.get('title'), 'status': r.get('status'),
+             'rounds': [{'round': x.get('round'), 'status': x.get('status')} for x in r.get('rounds', [])]}
+            for r in job.get('results', [])]
+    return {'id': job['id'], 'model': job['model'], 'effort': job['effort'], 'status': job['status'],
+            'created_at': job['created_at'], 'finished_at': job['finished_at'], 'results': rows}
 
 
 def user(handler, service, path, body, token, actor):

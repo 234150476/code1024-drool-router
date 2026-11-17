@@ -8,8 +8,8 @@ from . import config
 
 
 class ConsoleError(Exception):
-    def __init__(self, message, status=400):
-        self.message, self.status = message, status
+    def __init__(self, message, status=400, code=None):
+        self.message, self.status, self.code = message, status, code
         super().__init__(message)
 
 
