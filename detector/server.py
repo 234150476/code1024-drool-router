@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 from .controls import ControlConflict, Controls
 from .supplier_prices import Prices, project_price
 from .session_auth import verify_admin_session
+from .preview_sessions import PreviewSessions
 from .console_api import dispatch as console_dispatch
 APP_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 ARTIFACT_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
@@ -305,6 +306,7 @@ def make_server(host,port,dist,public,controls_enabled=False, *, access_token=''
     server.session_auth_url = session_auth_url
     server.console = console
     server.artifact_key = secrets.token_bytes(32)
+    server.preview_sessions = PreviewSessions()
     return server
 
 

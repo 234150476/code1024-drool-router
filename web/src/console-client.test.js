@@ -36,3 +36,27 @@ test('a broken key endpoint does not discard available questions or history',asy
     assert.deepEqual(data.jobs.value,{jobs:[]});
   }finally{globalThis.fetch=savedFetch;}
 });
+
+test('result requests keep the host login even through the old public audience flag',async()=>{
+  const savedFetch=globalThis.fetch,savedStorage=globalThis.sessionStorage;
+  globalThis.sessionStorage={getItem:key=>key==='drool-host-session'?'fixture.user.session':'legacy-password'};
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(options.headers.get('Authorization'),'Bearer fixture.user.session');
+    assert.equal(options.credentials,'omit');
+    assert.equal(options.cache,'no-store');
+    return {ok:true,status:200,json:async()=>({groups:[]})};
+  };
+  try{await request('/api/public/overview','GET',undefined,false);}
+  finally{globalThis.fetch=savedFetch;globalThis.sessionStorage=savedStorage;}
+});
+
+test('anonymous result requests never use the legacy dashboard credential',async()=>{
+  const savedFetch=globalThis.fetch,savedStorage=globalThis.sessionStorage;
+  globalThis.sessionStorage={getItem:key=>key==='drool-dashboard-access'?'legacy-password':null};
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(options.headers.has('Authorization'),false);
+    return {ok:true,status:200,json:async()=>({groups:[]})};
+  };
+  try{await request('/api/public/overview');}
+  finally{globalThis.fetch=savedFetch;globalThis.sessionStorage=savedStorage;}
+});

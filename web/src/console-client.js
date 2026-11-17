@@ -1,12 +1,12 @@
 import {adminFetch} from './access.js';
 import {endpoint} from './endpoints.js';
 
-// Both administrator and self-service requests use the host login session.
+// Result, administrator and self-service requests all carry the host session.
 // The legacy dashboard password is never a code1024 user credential.
-export async function request(path, method='GET', body, audience=true) {
+export async function request(path, method='GET', body) {
   const options={method,headers:{Accept:'application/json'},cache:'no-store'};
   if(body!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(body);}
-  const response=await (audience===false?fetch:adminFetch)(endpoint(path),options);
+  const response=await adminFetch(endpoint(path),options);
   let value;
   try { value=await response.json(); }
   catch {

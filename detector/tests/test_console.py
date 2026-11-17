@@ -126,7 +126,7 @@ class ConsoleTests(unittest.TestCase):
         except HTTPError as e: response = e
         with response:
             raw = response.read()
-            return response.status, json.loads(raw) if 'json' in response.headers.get('Content-Type', '') else raw, response.headers
+            return response.status, json.loads(raw) if raw and 'json' in response.headers.get('Content-Type', '') else raw, response.headers
     def enqueue(self, plan=None, key='fixture-request-001'):
         plan = plan or self.plan
         preview = self.service.store.resolve(plan)
@@ -134,7 +134,8 @@ class ConsoleTests(unittest.TestCase):
                    **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision', 'questions_revision')}}
         return self.service.enqueue(payload, ADMIN, '1'), payload
     def test_public_admin_and_legacy_boundaries(self):
-        status, data, headers = self.call('/api/public/overview')
+        self.assertEqual(self.call('/api/public/overview')[0], 401)
+        status, data, headers = self.call('/api/public/overview', token=USER)
         self.assertEqual(status, 200); self.assertEqual(headers['Cache-Control'], 'no-store')
         text = json.dumps(data)
         for hidden in ('private-mail', '@example.com', 'account_id', 'credentials', SECRET): self.assertNotIn(hidden, text)
@@ -175,6 +176,8 @@ class ConsoleTests(unittest.TestCase):
         with self.assertRaises(ConsoleError): self.service.enqueue(payload, ADMIN, '1')
         self.assertEqual(len(Gateway.requests), 0)
     def test_public_groups_hide_account_metadata_and_legacy_account_routes(self):
+        access = self.service.store.document('access')
+        self.service.store.save_document('access', {'allow_anonymous_results': True}, access['revision'], '1')
         job, _ = self.enqueue()
         self.service.execute(self.service.store.job(job['id']))
         document = self.service.store.document('publication')
@@ -219,11 +222,11 @@ class ConsoleTests(unittest.TestCase):
         value = deepcopy(self.plan['value']); value['show_artifacts'] = True
         self.plan = self.service.save_plan(value, '1', self.plan['id'], self.plan['revision'])
         run = self.service.store.public_id('run', rows[0]['id'])
-        self.assertEqual(self.call('/api/public/runs/'+run)[0], 200)
-        status, _, headers = self.call('/api/public/runs/'+run+'/artifact')
+        self.assertEqual(self.call('/api/public/runs/'+run, token=USER)[0], 200)
+        status, _, headers = self.call('/api/public/runs/'+run+'/artifact', token=USER)
         self.assertEqual(status, 200); self.assertIn('sandbox allow-scripts', headers['Content-Security-Policy'])
         value['published'] = False; self.service.save_plan(value, '1', self.plan['id'], self.plan['revision'])
-        for suffix in ('','/artifact'): self.assertEqual(self.call('/api/public/runs/'+run+suffix)[0], 404)
+        for suffix in ('','/artifact'): self.assertEqual(self.call('/api/public/runs/'+run+suffix, token=USER)[0], 404)
         self.assertNotIn(ADMIN, self.service.store.path.read_bytes().decode(errors='ignore'))
         self.assertNotIn(ADMIN, (self.root/'private/jobs'/job['id']/'config.json').read_text())
     def test_stop_recovery_and_schedule_guard(self):
@@ -262,7 +265,7 @@ class ConsoleTests(unittest.TestCase):
         sent=Gateway.requests[0][1]['messages'][-1]['content']
         self.assertIn('2D动画',sent) # Old snapshot survived the edited prompt.
         group=self.service.public.projection()['groups'][0]
-        status,history,_=self.call('/api/public/groups/'+group['id']+'/history')
+        status,history,_=self.call('/api/public/groups/'+group['id']+'/history', token=USER)
         self.assertEqual(status,200);self.assertEqual(history['runs'][0]['source'],'admin')
         raw=json.dumps(history)
         for hidden in ('account_id','private-mail','fixture-account','credentials'):self.assertNotIn(hidden,raw)
@@ -297,13 +300,13 @@ class ConsoleTests(unittest.TestCase):
         group=self.service.public.projection()['groups'][0]['id']
         record=self.service.public.history(group)[0]['id']
         path='/api/public/records/'+record+'/artifact'
-        status,content,headers=self.call(path)
+        status,content,headers=self.call(path, token=USER)
         self.assertEqual(status,200);self.assertIn(b'<svg',content)
         self.assertIn('sandbox allow-scripts',headers['Content-Security-Policy'])
         self.assertIn("connect-src 'none'",headers['Content-Security-Policy'])
         self.assertNotIn('allow-same-origin',headers['Content-Security-Policy'])
         value['published']=False;self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
-        self.assertEqual(self.call(path)[0],404)
+        self.assertEqual(self.call(path, token=USER)[0],404)
 
     def test_private_artwork_links_require_ownership_and_cannot_be_forged(self):
         job=self.service.store.create_self_job('1',7,'My key','fixture','high',['drawing'])
@@ -312,9 +315,93 @@ class ConsoleTests(unittest.TestCase):
         status,value,_=self.call('/api/user/jobs/'+job['id']+'/render-links',token=USER)
         self.assertEqual(status,200);path=value['links']['drawing'][0]
         self.assertEqual(self.call(path)[0],200)
-        self.assertEqual(self.call(path.split('?')[0])[0],403)
-        self.assertEqual(self.call(path[:-1]+'x')[0],403)
+        self.assertEqual(self.call(path.split('?')[0])[0],401)
+        self.assertEqual(self.call(path[:-1]+'x')[0],401)
+        with patch('detector.console_api.user_identity', return_value={'id': 99, 'role': 'user'}):
+            self.assertEqual(self.call(path, token=USER)[0],403)
+        access=self.service.store.document('access')
+        self.service.store.save_document('access',{'allow_anonymous_results':True},access['revision'],'1')
+        self.assertEqual(self.call(path.split('&preview=')[0])[0],401)
         self.assertEqual(self.service.store.self_job(job['id'])['public'],False)
+
+    def test_result_access_policy_is_admin_only_validated_and_persistent(self):
+        path='/api/admin/access'
+        status,document,_=self.call(path,token=ADMIN)
+        self.assertEqual(status,200)
+        self.assertEqual(document['value'],{'allow_anonymous_results':False})
+        payload={'value':{'allow_anonymous_results':True},'revision':document['revision']}
+        for token,expected in ((None,401),(USER,403),(SECRET,401)):
+            self.assertEqual(self.call(path,token=token)[0],expected)
+            self.assertEqual(self.call(path,payload,token,'PUT')[0],expected)
+        for invalid in ({}, {'allow_anonymous_results':'true'}, {'allow_anonymous_results':1},
+                        {'allow_anonymous_results':True,'unexpected':True}):
+            self.assertEqual(self.call(path,{**payload,'value':invalid},ADMIN,'PUT')[0],400)
+        self.assertEqual(self.call(path,payload,ADMIN,'PUT')[0],200)
+        self.assertEqual(self.call(path,payload,ADMIN,'PUT')[0],409)
+        self.assertTrue(ConsoleStore(self.root).document('access')['value']['allow_anonymous_results'])
+        # Upgrade an existing volume without changing settings or inspection plans.
+        before_settings=self.service.store.document('settings')
+        before_plans=self.service.store.plans()
+        with self.service.store.db() as db:
+            db.execute("DELETE FROM console_documents WHERE key='access'")
+        migrated=ConsoleStore(self.root)
+        self.assertFalse(migrated.document('access')['value']['allow_anonymous_results'])
+        self.assertEqual(migrated.document('settings'),before_settings)
+        self.assertEqual(migrated.plans(),before_plans)
+        self.assertEqual(Gateway.requests,[])
+
+    def test_every_result_route_requires_login_until_anonymous_is_enabled(self):
+        ident='a'*24
+        paths=['/api/public/overview','/api/public/groups','/api/public/groups/'+ident+'/results',
+               '/api/public/groups/'+ident+'/history','/api/public/records/'+ident,
+               '/api/public/records/'+ident+'/artifact','/api/public/runs/'+ident,
+               '/api/public/runs/'+ident+'/artifact','/api/public/self-results',
+               '/api/public/self-results/'+'a'*32]
+        for path in paths:
+            for token in (None,SECRET,'expired.host.session'):
+                with self.subTest(path=path,token=token):
+                    self.assertEqual(self.call(path,token=token)[0],401)
+            self.assertEqual(self.call(path,method='HEAD')[0],401)
+        self.assertEqual(self.call('/api/public/overview?token='+USER)[0],401)
+        with patch('detector.console_api.user_identity',return_value=False):
+            self.assertEqual(self.call('/api/public/overview',token=USER)[0],401)
+        document=self.service.store.document('access')
+        self.call('/api/admin/access',{'value':{'allow_anonymous_results':True},'revision':document['revision']},ADMIN,'PUT')
+        for path in ('/api/public/overview','/api/public/groups','/api/public/self-results'):
+            self.assertEqual(self.call(path)[0],200)
+            self.assertEqual(self.call(path,method='HEAD')[0],200)
+        for path in ('/api/user/keys','/api/user/jobs','/api/admin/inspections'):
+            self.assertEqual(self.call(path)[0],401)
+
+    def test_artwork_preview_checks_live_session_expiry_and_publication(self):
+        value=deepcopy(self.plan['value']);value['show_artifacts']=True
+        self.plan=self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
+        job,_=self.enqueue();self.service.execute(self.service.store.job(job['id']))
+        group=self.service.public.projection()['groups'][0]['id']
+        ident=self.service.public.history(group)[0]['id']
+        path='/api/public/records/'+ident
+        status,record,_=self.call(path,token=USER)
+        self.assertEqual(status,200)
+        preview=record['render_urls'][0]
+        for secret in (USER,ADMIN,SECRET,'fixture-account'):
+            self.assertNotIn(secret,preview)
+        self.assertEqual(self.call(path+'/artifact')[0],401)
+        self.assertEqual(self.call(preview)[0],200)
+        self.assertEqual(self.call(preview,method='HEAD')[0],200)
+        self.assertEqual(self.call(preview.replace(ident,'b'*24))[0],401)
+        with patch('detector.console_api.user_identity',return_value=False):
+            self.assertEqual(self.call(preview)[0],401)
+        with patch('detector.preview_sessions.time.time',return_value=time.time()+601):
+            self.assertEqual(self.call(preview)[0],401)
+        document=self.service.store.document('access')
+        enabled=self.call('/api/admin/access',{'value':{'allow_anonymous_results':True},'revision':document['revision']},ADMIN,'PUT')[1]
+        self.assertEqual(self.call(path+'/artifact')[0],200)
+        anonymous_record=self.call(path)[1]
+        self.assertNotIn('preview=',anonymous_record['render_urls'][0])
+        self.call('/api/admin/access',{'value':{'allow_anonymous_results':False},'revision':enabled['revision']},ADMIN,'PUT')
+        self.assertEqual(self.call(anonymous_record['render_urls'][0])[0],401)
+        value['published']=False;self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
+        self.assertEqual(self.call(preview)[0],404)
 
     def test_group_inspection_api_validates_role_question_and_recent_account(self):
         value=deepcopy(self.plan['value']);value['enabled']=False

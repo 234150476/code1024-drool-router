@@ -8,7 +8,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from .console_config import ConsoleError
-from .session_auth import admin_identity
+from .session_auth import admin_identity, user_identity
 
 
 def dispatch(handler, path):
@@ -16,12 +16,25 @@ def dispatch(handler, path):
     if service is None or not path.startswith(('/api/public/', '/api/admin/', '/api/user/')):
         return False
     try:
+        supplied = handler.headers.get('Authorization', '')
+        token = supplied[7:] if supplied.startswith('Bearer ') else ''
         if path.startswith('/api/public/'):
             if handler.command not in ('GET', 'HEAD'):
                 raise ConsoleError('不支持此方法', 405)
-            return public(handler, service, path)
-        supplied = handler.headers.get('Authorization', '')
-        token = supplied[7:] if supplied.startswith('Bearer ') else ''
+            private_artwork = path.startswith('/api/public/private-artwork/')
+            artwork = private_artwork or bool(re.fullmatch(r'/api/public/(?:records|runs)/[a-f0-9]{24}/artifact', path))
+            if artwork and not token:
+                grant = parse_qs(urlsplit(handler.path).query).get('preview', [''])[0]
+                token = handler.server.preview_sessions.token(grant, path)
+            anonymous = service.store.document('access')['value'].get('allow_anonymous_results') is True
+            identity = None
+            if private_artwork or not anonymous:
+                identity = user_identity(handler.server.session_auth_url, token,
+                                         handler.headers.get('User-Agent', ''), handler.headers.get('X-Real-IP', ''))
+                if not identity:
+                    raise ConsoleError('请从 code1024 登录后进入结果页面，当前未开放匿名访问'
+                                       if not private_artwork else '请登录后查看自己的作品', 401)
+            return public(handler, service, path, token if identity else '', identity)
         if path.startswith('/api/user/'):
             identity = service.self_service.identity(token, handler.headers.get('User-Agent', ''), handler.headers.get('X-Real-IP', ''))
             actor = str(identity['id'])
@@ -65,7 +78,15 @@ def read_body(handler, limit):
     return body
 
 
-def public(handler, service, path):
+def preview_url(handler, target, token):
+    if not token:
+        return target
+    path = urlsplit(target).path
+    grant = handler.server.preview_sessions.issue(token, path)
+    return target + ('&' if '?' in target else '?') + 'preview=' + grant
+
+
+def public(handler, service, path, token='', identity=None):
     if match := re.fullmatch(r'/api/public/records/([a-f0-9]{24})/artifact', path):
         value = service.public.record(match[1])
         if value.get('question_type') != 'drawing' and value.get('kind') != 'drawing':
@@ -82,7 +103,7 @@ def public(handler, service, path):
         expected = hmac.new(handler.server.artifact_key, (path+':'+expires).encode(), hashlib.sha256).hexdigest()
         if not expires.isdigit() or not time.time() < int(expires) <= time.time()+601 or not hmac.compare_digest(signature, expected):
             raise ConsoleError('作品链接已过期，请刷新记录', 403)
-        job = service.store.self_job(match[1])
+        job = service.self_service.job(match[1], str(identity['id']))
         row = next((row for row in job['results'] if row['kind']==match[2] and row.get('question_type')=='drawing'), None)
         index = int(match[3])
         if row is None or index >= len(row['rounds']):
@@ -109,7 +130,11 @@ def public(handler, service, path):
     elif match := re.fullmatch(r'/api/public/groups/([a-f0-9]{24})/history',path):
         handler.send_json({'runs':service.public.history(match[1])})
     elif match := re.fullmatch(r'/api/public/records/([a-f0-9]{24})',path):
-        handler.send_json(service.public.record(match[1]))
+        value = service.public.record(match[1])
+        if value.get('question_type') == 'drawing' or value.get('kind') == 'drawing':
+            value['render_urls'] = [preview_url(handler, path+'/artifact?round='+str(index), token)
+                                    for index, _ in enumerate(value.get('rounds', []))]
+        handler.send_json(value)
     elif match := re.fullmatch(r'/api/public/runs/([a-f0-9]{24})(/artifact)?', path):
         value = service.public.run(match[1], artifact=bool(match[2]))
         if match[2]:
@@ -156,7 +181,7 @@ def user(handler, service, path, body, token, actor):
                 for index, _ in enumerate(row['rounds']):
                     target = '/api/public/private-artwork/'+job['id']+'/'+row['kind']+'/'+str(index)
                     signature = hmac.new(handler.server.artifact_key, (target+':'+expires).encode(), hashlib.sha256).hexdigest()
-                    urls.append(target+'?expires='+expires+'&signature='+signature)
+                    urls.append(preview_url(handler, target+'?expires='+expires+'&signature='+signature, token))
                 links[row['kind']] = urls
             return handler.send_json({'links': links})
     if path == '/api/user/jobs' and method == 'POST':
@@ -207,6 +232,8 @@ def admin(h, s, path, body, token, actor):
     if method == 'GET':
         if path == '/api/admin/me':
             return h.send_json({'role': 'admin', 'id': actor})
+        if path == '/api/admin/access':
+            return h.send_json(store.document('access'))
         if path == '/api/admin/bootstrap':
             return h.send_json({'settings': store.document('settings'), 'inventory': store.inventory(),
                                 'plans': store.plans(), 'jobs': [s.job_summary(j) for j in store.jobs()],
@@ -245,6 +272,9 @@ def admin(h, s, path, body, token, actor):
     if path=='/api/admin/questions' and method=='PUT':
         fields(body,['value','revision'])
         return h.send_json(store.save_document('questions',body['value'],body['revision'],actor))
+    if path == '/api/admin/access' and method == 'PUT':
+        fields(body, ['value', 'revision'])
+        return h.send_json(store.save_document('access', body['value'], body['revision'], actor))
     if path in ('/api/admin/settings', '/api/admin/publication') and method == 'PUT':
         fields(body, ['value', 'revision'])
         if path.endswith('/settings'):

@@ -61,7 +61,8 @@ class ConsoleStore:
             from .quality_catalog import defaults as question_defaults, validate as validate_questions
             db.execute('INSERT OR IGNORE INTO console_documents VALUES (?,1,?)',('questions',dumps(validate_questions(question_defaults()))))
             for key, value in [('settings', defaults()), ('inventory', {'accounts': [], 'groups': [], 'synced_at': None}),
-                               ('publication', {'group_names': {}, 'account_names': {}})]:
+                               ('publication', {'group_names': {}, 'account_names': {}}),
+                               ('access', {'allow_anonymous_results': False})]:
                 db.execute('INSERT OR IGNORE INTO console_documents VALUES (?,1,?)', (key, dumps(value)))
             # Migrate existing deployment into a disabled-timer plan, without a paid request.
             if not db.execute("SELECT 1 FROM console_documents WHERE key='migration_v1'").fetchone():
@@ -113,6 +114,10 @@ class ConsoleStore:
             raise ConsoleError('配置版本无效')
         if key == 'settings':
             value = validate_settings(value)
+        elif key == 'access':
+            if (not isinstance(value, dict) or set(value) != {'allow_anonymous_results'} or
+                    type(value['allow_anonymous_results']) is not bool):
+                raise ConsoleError('结果访问配置必须包含有效的匿名访问开关')
         elif key == 'publication':
             if not isinstance(value, dict) or set(value) != {'group_names', 'account_names'}:
                 raise ConsoleError('公开名称配置无效')
