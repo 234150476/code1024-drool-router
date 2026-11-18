@@ -90,3 +90,7 @@ curl -fsS http://127.0.0.1:4191/healthz
 ## 上游与许可
 
 本项目在 [NoonWake.AI 的 AI Drool Router](https://github.com/noonwake-ai/ai-drool-router) 基础上二次开发，增加了独立巡检控制台、Sub2API 页面嵌入、分组定时巡检与用户 Key 自助检测。保留原项目版权声明 © NoonWake.AI，沿用 **LGPL-3.0-or-later**，许可全文见 [LICENSE](LICENSE) 和 [COPYING](COPYING)。
+
+## 友情链接
+
+- [LINUX DO - 新的理想型社区](https://linux.do/)
