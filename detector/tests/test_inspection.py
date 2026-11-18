@@ -2,19 +2,22 @@
 from copy import deepcopy
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
 import unittest
+import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from detector import config
-from detector.account_selection import recent_active
+from detector.account_selection import inspection_candidates, recent_active
 from detector.console_config import ConsoleError, schedule
 from detector.console_service import ConsoleService, schedule_slot
 from detector.credential_snapshot import read
-from detector.upstream import Sub2API, ProbeError
+from detector.upstream import OAUTH_QUOTA_ERROR, Sub2API, ProbeError
 
 
 def at(clock):
@@ -45,6 +48,13 @@ class InspectionTests(unittest.TestCase):
         selected,skipped=recent_active(rows,1,now=100)
         self.assertEqual([a['id'] for a in selected],[3]);self.assertEqual(len(skipped),5)
         self.assertEqual(recent_active([account(1,None)],1,now=100)[0],[])
+
+    def test_no_usage_history_starts_with_highest_priority(self):
+        rows = [{'id': i, 'priority': priority, 'status': 'active', 'schedulable': schedulable}
+                for i, priority, schedulable in ((1, 0, False), (2, 5, True), (3, 1, True), (4, 3, True))]
+        selected, skipped = inspection_candidates(rows, 2)
+        self.assertEqual([row['id'] for row in selected], [3, 4])
+        self.assertEqual({row['id'] for row in skipped}, {1, 2})
 
     def test_snapshot_supplies_credentials_and_quota_without_export_permission(self):
         with tempfile.TemporaryDirectory() as root:
@@ -81,3 +91,114 @@ class InspectionTests(unittest.TestCase):
                     service.tick();self.assertEqual(service.store.jobs(),[]);sync.assert_not_called()
                 value=service.store.plan(plan['id'])['value'];value['isolation']={'enabled':True,'failure_rounds':2,'cooldown_minutes':60,'min_available':1}
                 with self.assertRaises(ConsoleError):service.save_plan(value,'admin')
+
+
+class InspectionFallbackTests(unittest.TestCase):
+    def setUp(self):
+        from detector.inspection import save
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.service = ConsoleService(folder.name, start=False)
+        now = time.time()
+        self.accounts = {i: {'id': i, 'name': 'fixture-account-'+str(i), 'type': 'apikey',
+                            'platform': 'openai', 'status': 'active', 'schedulable': True,
+                            'priority': priority, 'last_used_at': now-age, 'group_ids': [group]}
+                         for i, priority, age, group in ((1, 8, 10, 3), (2, 1, 50, 3),
+                                                         (3, 2, 20, 3), (4, 0, 5, 4), (5, 3, 15, 3))}
+        self.groups = [{'id': i, 'name': 'fixture group '+str(i), 'platform': 'openai'} for i in (3, 4)]
+        self.service.store.save_inventory(list(self.accounts.values()), self.groups, 'admin')
+        self.payload = {'group_id': 3, 'enabled': True, 'model': 'fixture', 'effort': 'low',
+                        'question_ids': ['numeric', 'choice'], 'questions': [],
+                        'schedule': {**self.service.store.document('settings')['value']['schedule'], 'enabled': False}}
+        self.plan = save(self.service, self.payload, 'admin')
+
+    def run_job(self, probe, quota=None, read_account=None):
+        from detector.quality_worker import main
+        store = self.service.store
+        plan = store.plan(self.plan['id'])
+        preview = store.resolve(plan)
+        job, _ = store.create_job(plan['id'], uuid.uuid4().hex, 'admin', 'manual', preview)
+
+        def run(args, *, env, **kwargs):
+            with patch.dict(os.environ, env, clear=True), patch('sys.argv', ['worker', *args[3:]]):
+                main()
+            return SimpleNamespace(returncode=0)
+
+        gateway = SimpleNamespace(account=read_account or (lambda i: deepcopy(self.accounts[i])))
+        with (patch.object(self.service, 'machine_key', return_value='fixture-machine-key'),
+              patch('detector.console_service.subprocess.run', side_effect=run),
+              patch('detector.upstream.Sub2API', return_value=gateway),
+              patch('detector.upstream.oauth_quota_state', side_effect=quota or (lambda a: {'limited': False})),
+              patch('detector.upstream.probe', side_effect=probe)):
+            self.service.execute(job)
+        return self.service.job_summary(store.job(job['id']))
+
+    def test_quota_and_partial_failure_retry_whole_suite_in_priority_order(self):
+        seen = []
+
+        def probe(account, kind, *, prompt, **kwargs):
+            answer_is_numeric = prompt.startswith('计算')
+            seen.append((account['id'], answer_is_numeric))
+            if account['id'] == 2 and not answer_is_numeric:
+                raise ProbeError('HTTP_429', 'limited')
+            return {'text': '最终答案：323' if answer_is_numeric else '最终答案：3'}
+
+        job = self.run_job(probe, quota=lambda account: {'limited': account['id'] == 1})
+        self.assertEqual(seen, [(2, True), (2, False), (3, True), (3, False)])
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual([(r['account_id'], r['error_code']) for r in job['attempts']],
+                         [(1, OAUTH_QUOTA_ERROR), (2, 'HTTP_429'), (3, None)])
+        self.assertEqual({r['account_id'] for r in self.service.store.results()}, {3})
+        history = self.service.public.history(self.service.store.public_id('group', 'g3'))
+        self.assertEqual(len(history), 2)
+        self.assertNotIn('account_id', json.dumps(history))
+
+    def test_exhaustion_produces_one_unavailable_result_and_respects_custom_limit(self):
+        from detector.inspection import save
+        self.plan = save(self.service, {**self.payload, 'max_account_attempts': 2}, 'admin',
+                         self.plan['id'], self.plan['revision'])
+        seen = []
+
+        def probe(account, *args, **kwargs):
+            seen.append(account['id'])
+            raise ProbeError('HTTP_503', 'upstream unavailable')
+
+        job = self.run_job(probe)
+        self.assertEqual(seen, [1, 2])
+        self.assertEqual(job['status'], 'completed_with_errors')
+        self.assertEqual(job['status_counts'], {'unavailable': 1})
+        history = self.service.public.history(self.service.store.public_id('group', 'g3'))
+        self.assertEqual([r['status'] for r in history], ['unavailable'])
+        self.assertFalse(history[0]['content_available'])
+
+    def test_definite_wrong_answer_is_not_replaced_after_later_error(self):
+        seen = []
+
+        def probe(account, kind, *, prompt, **kwargs):
+            seen.append(account['id'])
+            if not prompt.startswith('计算'):
+                raise ProbeError('NETWORK_ERROR', 'upstream disconnected')
+            return {'text': '最终答案：324'}
+
+        job = self.run_job(probe)
+        self.assertEqual(seen, [1, 1])
+        self.assertEqual(job['status'], 'completed')
+        self.assertEqual(job['status_counts'], {'fail': 1, 'error': 1})
+
+    def test_gateway_denial_stops_without_switching(self):
+        def read_account(account_id):
+            self.assertEqual(account_id, 1)
+            raise ProbeError('ACCOUNT_SYNC_HTTP_403', 'gateway denied')
+
+        job = self.run_job(lambda *args, **kwargs: self.fail('probe called'), read_account=read_account)
+        self.assertEqual(job['status'], 'completed_with_errors')
+        self.assertEqual([(r['account_id'], r['error_code']) for r in job['attempts']], [(1, 'ACCOUNT_SYNC_HTTP_403')])
+
+    def test_no_eligible_accounts_has_public_outcome_and_skips_worker(self):
+        self.service.store.save_inventory([{**row, 'schedulable': False} for row in self.accounts.values()], self.groups, 'admin')
+        job = self.run_job(lambda *args, **kwargs: self.fail('probe called'))
+        self.assertEqual(job['status'], 'completed_with_errors')
+        self.assertEqual(job['attempts'], [])
+        history = self.service.public.history(self.service.store.public_id('group', 'g3'))
+        self.assertEqual([r['status'] for r in history], ['unavailable'])
+        self.assertEqual(self.service.public.record(history[0]['id'])['rounds'], [])

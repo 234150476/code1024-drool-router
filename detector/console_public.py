@@ -9,7 +9,7 @@ from .upstream import redact
 
 def metrics(rows):
     counts = {status: sum(r['status'] == status for r in rows)
-              for status in ('pass', 'fail', 'error', 'quota', 'cancelled','unknown','reference')}
+              for status in ('pass', 'fail', 'error', 'quota', 'cancelled','unknown','reference','unavailable')}
     samples = counts['pass'] + counts['fail']
     durations = [r['duration'] for r in rows if isinstance(r.get('duration'), (int, float)) and r['duration'] >= 0]
     return {**counts, 'samples': samples, 'rate': round(100 * counts['pass'] / samples, 1) if samples else None,
@@ -172,7 +172,8 @@ class PublicResults:
             raw=row['value']
             value={k:raw.get(k) for k in ('title','kind','status','model','effort','bank_version','duration','slot','finished_at','question_type')}
             value.update(id=store.public_id('record',row['id']),source='admin',batch_id=store.public_id('batch',row['job_id']),
-                content_available=bool(plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))
+                content_available=raw['status'] != 'unavailable' and bool(
+                    plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))
             if include_accounts:
                 value['hidden_from_results'] = (row['job_id'], row['account_id']) not in visible
                 targets = store.job(row['job_id'])['snapshot']['targets']
@@ -180,6 +181,24 @@ class PublicResults:
                 value['account_name'] = next((a['name'] for a in targets if a['id']==row['account_id']), '')
             rows.append(value)
         cutoff=time.time()-store.document('settings')['value']['retention']['artifacts_hours']*3600
+        for job in store.jobs():
+            snapshot = job['snapshot']
+            plan = plans.get(job['plan_id'])
+            if (not plan or job['created_at'] < cutoff or job['status'] != 'completed_with_errors' or
+                    job['source'] not in ('manual', 'timer') or snapshot['targets'] or
+                    not snapshot.get('preview', {}).get('max_account_attempts')):
+                continue
+            scope = snapshot['plan']['value']['scope']
+            if scope != plan['scope'] or group_id != store.public_id('group', 'g'+str(scope['group_ids'][0])):
+                continue
+            spec = next((spec for spec in snapshot['plan']['value']['models'].values() if spec['enabled']), None)
+            if not spec:
+                continue
+            rows.append({'id': store.public_id('empty-inspection', job['id']), 'source': 'admin',
+                         'batch_id': store.public_id('batch', job['id']), 'slot': job['created_at'],
+                         'finished_at': job['finished_at'], 'title': '分组巡检', 'kind': 'inspection',
+                         'status': 'unavailable', 'model': spec['model'], 'effort': spec['effort'],
+                         'content_available': False})
         for job in store.self_jobs(public_only=True):
             if job.get('group_id') is None or store.public_id('group','g'+str(job['group_id']))!=group_id or job['created_at']<cutoff: continue
             for index,r in enumerate(job['results']):

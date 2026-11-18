@@ -153,10 +153,15 @@ def validate_plan(value):
         if [q['id'] for q in out['questions']] != out['kinds']:
             raise ConsoleError('计划题目与选择项目不一致')
     if 'selection' in out:
+        from .account_selection import MAX_ACCOUNT_ATTEMPTS, inspection_attempt_limit
         selection = out['selection']
-        if not isinstance(selection, dict) or set(selection) != {'mode', 'count'} or selection['mode'] not in ('all', 'recent_active'):
+        if not isinstance(selection, dict) or set(selection)-{'max_account_attempts'} != {'mode', 'count'} or selection['mode'] not in ('all', 'recent_active'):
             raise ConsoleError('账号抽样配置无效')
         integer(selection['count'], '每轮抽样账号数', 1, 50)
+        if 'max_account_attempts' in selection:
+            integer(selection['max_account_attempts'], '每轮最多尝试账号数', 1, MAX_ACCOUNT_ATTEMPTS)
+            if inspection_attempt_limit(out) is None:
+                raise ConsoleError('账号顺延仅支持单分组巡检')
     if 'quarantine' in out:
         policy = out['quarantine']
         if not isinstance(policy, dict) or set(policy)-{'hide_failed_results'} != {'enabled', 'cooldown_minutes'}:

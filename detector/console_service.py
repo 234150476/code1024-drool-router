@@ -169,6 +169,16 @@ class ConsoleService:
         except (OSError, ValueError):
             pass
         dbpath = root / 'private' / 'state.sqlite3'
+        attempt_limit = snapshot.get('preview', {}).get('max_account_attempts')
+        progress = {}
+        if attempt_limit and job['source'] in ('manual', 'timer'):
+            total = len(snapshot['questions']) if snapshot['targets'] else 0
+            try:
+                progress = json.loads((root / 'inspection-attempts.json').read_text())
+            except (OSError, ValueError):
+                pass
+            progress = {'max_account_attempts': attempt_limit, 'attempts': progress.get('accounts', []),
+                        'attempt_outcome': progress.get('outcome')}
         if snapshot.get('questions'):
             try:
                 rows=json.loads((root/'results.json').read_text())
@@ -188,7 +198,7 @@ class ConsoleService:
             'name': snapshot['plan']['value']['name'], 'account_count': len(snapshot['targets']),
             'plan_revision': snapshot['plan']['revision'], 'settings_revision': snapshot['settings']['revision'],
             'completed': completed, 'total': total, 'status_counts': status_counts,
-            'models': snapshot['plan']['value']['models'], 'skipped': skipped}
+            'models': snapshot['plan']['value']['models'], 'skipped': skipped, **progress}
 
     def stop_job(self, ident, actor):
         with self.lock:
@@ -251,7 +261,7 @@ class ConsoleService:
                     continue
             self.sync_inventory(None, 'scheduler')
             preview = self.store.resolve(plan)
-            if not preview['account_count']:
+            if not preview['account_count'] and not preview.get('max_account_attempts'):
                 continue
             self.enqueue({'plan_id': plan['id'], 'request_key': key, 'confirmed': True,
                           **{k: preview[k] for k in ('plan_revision', 'settings_revision', 'inventory_revision','questions_revision')}}, None, 'scheduler', 'timer')
@@ -267,6 +277,11 @@ class ConsoleService:
             if job['source'] in ('timer', 'cooldown') and quiet_paused(job['snapshot']['plan']['value']['schedule']):
                 self.tokens.pop(ident, None)
                 self.store.update_job(ident, status='cancelled', finished_at=time.time(), message='已进入暂停时段，未发起检测请求')
+                return
+            if not job['snapshot']['targets'] and job['snapshot'].get('preview', {}).get('max_account_attempts'):
+                self.tokens.pop(ident, None)
+                self.store.update_job(ident, status='completed_with_errors', finished_at=time.time(),
+                                      message='当前分组没有可检测账号')
                 return
             self.store.update_job(ident, status='running', started_at=time.time())
             token = self.tokens.pop(ident, None)
@@ -314,19 +329,31 @@ class ConsoleService:
             self.store.import_results(job)
             cancelled = (root / 'stop').exists()
             skipped_count = len(json.loads((root / 'skipped.json').read_text())) if (root / 'skipped.json').exists() else 0
-            status_counts = self.job_summary(self.store.job(ident)).get('status_counts', {})
+            summary = self.job_summary(job)
+            status_counts = summary['status_counts']
+            outcome = summary.get('attempt_outcome')
             has_request_errors = bool(status_counts.get('error')) and not (status_counts.get('pass') or status_counts.get('fail'))
-            final_status = 'cancelled' if cancelled else 'failed' if result.returncode != 0 else 'completed_with_errors' if has_request_errors else 'completed'
-            if cancelled:
-                final_message = '任务已停止'
+            if cancelled or outcome == 'paused':
+                final_status = 'cancelled'
+                final_message = '任务已停止' if cancelled else '已进入暂停时段，停止后续检测'
             elif result.returncode != 0:
+                final_status = 'failed'
                 final_message = '执行失败，请查看任务详情与私有日志'
-            elif has_request_errors:
-                final_message = '模型请求全部失败：0 项可判定 / %d 项请求故障' % status_counts.get('error', 0)
-            elif skipped_count:
-                final_message = '%d 个账号因成员或状态变化跳过，请查看任务详情' % skipped_count
-            else:
+            elif outcome == 'unavailable':
+                final_status = 'completed_with_errors'
+                final_message = '已尝试 %d 个账号，本轮账号均不可用' % len(summary['attempts'])
+            elif outcome == 'error':
+                final_status = 'completed_with_errors'
+                final_message = '检测请求失败（%s）' % summary['attempts'][-1]['error_code']
+            elif outcome == 'completed':
+                final_status = 'completed'
                 final_message = None
+            elif has_request_errors:
+                final_status = 'completed_with_errors'
+                final_message = '模型请求全部失败：0 项可判定 / %d 项请求故障' % status_counts.get('error', 0)
+            else:
+                final_status = 'completed'
+                final_message = '%d 个账号因成员或状态变化跳过，请查看任务详情' % skipped_count if skipped_count else None
             self.store.update_job(ident, status=final_status,
                                   finished_at=time.time(), message=final_message)
         except Exception:

@@ -1,4 +1,4 @@
-export const verdicts={pass:'通过',fail:'未通过',error:'请求失败',quota:'限额跳过',cancelled:'已取消',unknown:'无法判定',reference:'仅供参考',queued:'排队中',running:'检测中',completed:'已完成',completed_with_errors:'请求失败',failed:'执行失败',interrupted:'已中断'};
+export const verdicts={pass:'通过',fail:'未通过',error:'请求失败',quota:'限额跳过',unavailable:'账号不可用',paused:'已停止',cancelled:'已取消',unknown:'无法判定',reference:'仅供参考',queued:'排队中',running:'检测中',completed:'已完成',completed_with_errors:'请求失败',failed:'执行失败',interrupted:'已中断'};
 export const isDrawing=row=>row?.question_type==='drawing'||row?.kind==='drawing';
 export const verdict=row=>isDrawing(row)&&row.status==='pass'?'生成完成':verdicts[row?.status]||row?.status||'等待检测';
 export const clock=(value,full=false)=>value?new Date(value*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false,...(full?{}:{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}):'—';

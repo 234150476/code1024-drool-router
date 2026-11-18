@@ -457,8 +457,17 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.call(path,payload,USER,'PUT')[0],403)
         status,result,_=self.call(path,payload,ADMIN,'PUT')
         self.assertEqual(status,200);self.assertEqual(result['group_id'],3)
+        self.assertEqual(result['max_account_attempts'],3)
         plan=self.service.store.plan(self.plan['id'])
         self.assertEqual(plan['value']['selection'],{'mode':'recent_active','count':1})
+        for invalid in (0, 11, True):
+            self.assertEqual(self.call(path, {'value':{**spec,'max_account_attempts':invalid},
+                'revision':plan['revision']}, ADMIN, 'PUT')[0],400)
+        status,custom,_=self.call(path, {'value':{**spec,'max_account_attempts':5},
+            'revision':plan['revision']}, ADMIN, 'PUT')
+        self.assertEqual(status,200);self.assertEqual(custom['max_account_attempts'],5)
+        self.assertEqual(self.call(path, {'value':spec,'revision':custom['revision']},
+            ADMIN, 'PUT')[1]['max_account_attempts'],5)
         self.assertTrue(plan['value']['published']);self.assertNotIn('isolation',plan['value'])
         self.assertEqual(self.call('/api/admin/inspections',token=ADMIN)[0],200)
         self.assertEqual(self.call('/api/admin/inspections',token=USER)[0],403)

@@ -11,6 +11,7 @@ import time
 import uuid
 
 from . import config
+from .account_selection import inspection_attempt_limit, inspection_candidates, recent_active
 from .console_config import ConsoleError, defaults, validate_plan, validate_settings
 
 
@@ -160,6 +161,7 @@ class ConsoleStore:
                                    'platform': str(account.get('platform', ''))[:32],
                                    'type': str(account.get('type', 'unknown'))[:32],
                                    'status': str(account.get('status', 'unknown'))[:32],
+                                   'priority': account.get('priority') if type(account.get('priority')) is int else None,
                                    **{key: account.get(key) for key in ('schedulable', 'last_used_at', 'expires_at',
                                        'rate_limit_reset_at', 'overload_until', 'temp_unschedulable_until')},
                                    'group_ids': sorted(set(group_ids))})
@@ -232,8 +234,11 @@ class ConsoleStore:
         if scope['mode'] == 'accounts':
             skipped.extend({'id': i, 'reason': '账号已移除或清单未同步'} for i in set(scope['account_ids']) - found)
         selection = value.get('selection', {})
-        if selection.get('mode') == 'recent_active':
-            from .account_selection import recent_active
+        limit = inspection_attempt_limit(value)
+        if limit is not None:
+            selected, omitted = inspection_candidates(selected, min(limit, settings['value']['max_accounts']))
+            skipped.extend(omitted)
+        elif selection.get('mode') == 'recent_active':
             selected, omitted = recent_active(selected, selection['count'])
             skipped.extend(omitted)
         if len(selected) > settings['value']['max_accounts']:
@@ -242,6 +247,7 @@ class ConsoleStore:
         from .quality_catalog import select
         units=sum(q['rounds'] for q in (value.get('questions') or select(self,value['kinds'])))
         return {'accounts': selected, 'skipped': skipped, 'account_count': len(selected),
+                **({'max_account_attempts': limit} if limit is not None else {}),
                 'max_requests': len(selected) * attempts * units, 'estimated_cost': None,
                 'inventory_revision': inventory['revision'], 'settings_revision': settings['revision'],
                 'questions_revision':self.document('questions')['revision'],
@@ -268,7 +274,7 @@ class ConsoleStore:
             for key in ('plan_revision', 'settings_revision', 'inventory_revision','questions_revision'):
                 if expected.get(key) != preview[key]:
                     raise ConsoleError('检测范围或配置已变化，请重新预览并确认', 409)
-            if not preview['account_count']:
+            if not preview['account_count'] and not (source in ('manual', 'timer') and preview.get('max_account_attempts')):
                 raise ConsoleError('当前范围没有可检测账号，请同步或检查平台模型')
             if db.execute("SELECT count(*) FROM console_jobs WHERE status IN ('queued','running')").fetchone()[0] >= 20:
                 raise ConsoleError('任务队列已满，请稍后重试', 409)

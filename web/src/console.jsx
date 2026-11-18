@@ -36,11 +36,19 @@ function AdminSettings({onChange}){
   const [data,setData]=useState(null),[selected,setSelected]=useState(''),[draft,setDraft]=useState(null),[key,setKey]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
   async function load(id){const value=await request('/api/admin/inspections');setData(value);setSelected(old=>id??(old||value.inspections[0]?.id||''));return value;}
   useEffect(()=>{load().catch(e=>setError(e.message));},[]);
+  const activeJobs=data?.jobs.some(job=>['running','queued'].includes(job.status));
+  useEffect(()=>{
+    if(!activeJobs)return;
+    const timer=setInterval(()=>request('/api/admin/inspections').then(value=>{
+      setData(old=>old&&({...old,jobs:value.jobs}));
+    }).catch(e=>setError(e.message)),3000);
+    return()=>clearInterval(timer);
+  },[activeJobs]);
   const record=data?.inspections.find(p=>p.id===selected);
   useEffect(()=>{
     if(!data)return;
     const questions=clone(record?.questions.length?record.questions:[data.questions.value.find(q=>q.id==='drawing')||data.questions.value[0]]);
-    setDraft({group_id:record?.group_id||data.groups[0]?.id||0,enabled:record?.enabled??true,model:record?.model||'gpt-6.1-sol',effort:record?.effort||'low',question_ids:questions.map(q=>q.id),questions,quarantine:{...defaultQuarantine,...record?.quarantine},schedule:{...daytime,...record?.schedule,quiet_pause:true}});
+    setDraft({group_id:record?.group_id||data.groups[0]?.id||0,enabled:record?.enabled??true,model:record?.model||'gpt-6.1-sol',effort:record?.effort||'low',max_account_attempts:record?.max_account_attempts??3,question_ids:questions.map(q=>q.id),questions,quarantine:{...defaultQuarantine,...record?.quarantine},schedule:{...daytime,...record?.schedule,quiet_pause:true}});
   },[selected,record?.revision,Boolean(data)]);
   async function act(fn,success){setBusy(true);setError('');setMessage('');try{await fn();if(success)setMessage(success);await onChange();}catch(e){setError(e.message);}finally{setBusy(false);}}
   const set=(field,value)=>setDraft(old=>({...old,[field]:value}));
@@ -55,11 +63,15 @@ function AdminSettings({onChange}){
     const response=await request('/api/admin/inspections'+(record?'/'+record.id:''),record?'PUT':'POST',{value,...(record?{revision:record.revision}:{})});
     await load(response.id);
   },'分组巡检已保存。');}
-  return <><section className="ir-panel ir-settings"><div className="ir-section-head"><div><h2>定时巡检设置</h2><p>每个分组一份配置，每轮选取最近使用的一个可调度账号，依次执行所选题目。</p></div></div>
+  return <><section className="ir-panel ir-settings"><div className="ir-section-head"><div><h2>定时巡检设置</h2><p>优先检测最近使用的账号。账号不可用时，按网关优先级在同分组内顺延。</p></div></div>
     {error&&<p className="ir-error" role="alert">{error}</p>}{message&&<p className="ir-message" role="status">{message}</p>}
     {!data||!draft?<div className="ir-empty">正在加载配置…</div>:<fieldset disabled={busy}>
       <div className="ir-actions"><select aria-label="选择分组配置" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">新增分组巡检</option>{data.inspections.map(p=><option key={p.id} value={p.id}>{data.groups.find(g=>g.id===p.group_id)?.name||p.group_id}</option>)}</select><button onClick={()=>act(async()=>{await request('/api/admin/inventory/sync','POST',{});await load();},'分组已同步。')}><RefreshCw size={15}/>同步分组</button></div>
       <div className="ir-form-grid"><Field label="检测分组"><select value={draft.group_id} onChange={e=>set('group_id',Number(e.target.value))}>{data.groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></Field><Field label="检测模型"><input value={draft.model} onChange={e=>set('model',e.target.value)}/></Field><Field label="思考强度"><Effort value={draft.effort} onChange={v=>set('effort',v)}/></Field></div>
+      <Field label="每轮最多尝试账号数"><select value={draft.max_account_attempts} onChange={e=>set('max_account_attempts',Number(e.target.value))}>
+        {Array.from({length:10},(_,i)=><option key={i+1} value={i+1}>{i+1} 个</option>)}
+      </select></Field>
+      <p className="ir-note">首次尝试和限额跳过都计入上限。没有最近使用记录时，从优先级数值最小的可调度账号开始。</p>
       <div className="ir-own-result"><h3>检测题目（可多选）</h3><p className="ir-note">同一账号依次检测所有选中题目。每题可单独配置内容、标准答案和请求次数；糖果测试默认只请求一次。</p>
         <div className="ir-actions">{data.questions.value.filter(q=>q.enabled).map(q=><label className="ir-check" key={q.id}><input type="checkbox" checked={draft.question_ids.includes(q.id)} disabled={draft.question_ids.length===1&&draft.question_ids[0]===q.id} onChange={e=>toggleQuestion(q.id,e.target.checked)}/>{q.title}</label>)}</div>
         {draft.questions.map(q=><details key={q.id} open><summary>{q.title} · {q.rounds} 次请求</summary>
@@ -71,10 +83,15 @@ function AdminSettings({onChange}){
       <div className="ir-form-grid"><Field label="白天间隔（分钟）"><input type="number" min="5" max="1440" value={draft.schedule.regular_minutes} onChange={e=>set('schedule',{...draft.schedule,regular_minutes:Number(e.target.value)})}/></Field><Field label="暂停时段开始（北京时间）"><input type="time" value={draft.schedule.quiet_start} onChange={e=>set('schedule',{...draft.schedule,quiet_start:e.target.value})}/></Field><Field label="恢复检测（北京时间）"><input type="time" value={draft.schedule.quiet_end} onChange={e=>set('schedule',{...draft.schedule,quiet_end:e.target.value})}/></Field></div>
       <label className="ir-check"><input type="checkbox" checked={draft.enabled&&draft.schedule.enabled} onChange={e=>setDraft(old=>({...old,enabled:e.target.checked,schedule:{...old.schedule,enabled:e.target.checked}}))}/>启用此分组的定时巡检</label>
       <QuarantinePolicy value={draft.quarantine} questions={draft.questions} keyReady={data.capabilities.quarantine_key_ready} onChange={value=>set('quarantine',value)}/>
-      <p className="ir-note">结果展示到分组。鹈鹕作品只作人工观察，其他题目按标准答案判断；未开启自动剔除时只检测和展示。未找到有使用记录的可调度账号时，本轮跳过。</p>
+      <p className="ir-note">结果展示到分组。鹈鹕作品供人工观察，有标准答案的题目自动判定。</p>
       <div className="ir-actions"><button className="ir-primary" disabled={!draft.questions.length} onClick={save}>保存巡检配置</button>{record&&<button onClick={()=>act(async()=>{await request('/api/admin/inspections/'+record.id+'/run','POST',{request_key:crypto.randomUUID()});await load();},'已提交一次巡检，请稍后刷新结果。')}>按已保存配置巡检一次</button>}</div>
       <details className="ir-credentials"><summary>巡检读取凭据 · {data.capabilities.machine_credential_ready?'已配置':'待配置'}</summary><p>定时巡检使用专用管理员机器 Key 读取授权分组。账号凭据通过受保护的服务器文件提供，Key 检测使用用户自己的 Key。</p><Field label="网关管理员 API Key"><input type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder="验证成功后保存，不回显原文"/></Field><button disabled={!key} onClick={()=>act(async()=>{await request('/api/admin/automation','PUT',{key});setKey('');await load();},'服务凭据已验证并保存。')}>验证并保存</button></details>
-      {data.jobs.some(job=>['running','queued','failed','completed_with_errors'].includes(job.status))&&<details><summary>最近任务状态</summary>{data.jobs.slice(0,10).map(job=><p key={job.id}>{clock(job.created_at)} · {verdict(job)} · {job.message||job.name}</p>)}</details>}
+      {data.jobs.length>0&&<details><summary>最近任务状态</summary>{data.jobs.slice(0,10).map(job=><div className="ir-own-result" key={job.id}>
+        <p>{clock(job.created_at)} · {verdict(job)} · {job.message||job.name}</p>
+        {job.attempts?.length>0&&<ol>{job.attempts.map(attempt=><li key={attempt.account_id}>
+          #{attempt.account_id} {attempt.name} · 优先级 {attempt.priority??'—'} · {verdict(attempt)}{attempt.error_code?' · '+attempt.error_code:''}
+        </li>)}</ol>}
+      </div>)}</details>}
     </fieldset>}
   </section><QuarantineAdmin onCredentialChange={()=>load()}/></>;
 }
