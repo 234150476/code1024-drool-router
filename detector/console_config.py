@@ -127,7 +127,7 @@ def validate_settings(value):
 def validate_plan(value):
     required = {'name', 'enabled', 'scope', 'models', 'kinds', 'schedule', 'published', 'public_name',
                 'show_accounts', 'show_answers', 'show_artifacts', 'write_priority', 'write_callable'}
-    if not isinstance(value, dict) or set(value)-{'isolation', 'selection', 'questions', 'quarantine'} != required:
+    if not isinstance(value, dict) or set(value)-{'isolation', 'selection', 'questions', 'quarantine', 'max_saved_rounds'} != required:
         raise ConsoleError('检测计划包含未知字段或缺少字段')
     out = deepcopy(value)
     out['name'] = text(out['name'], '计划名称', 80)
@@ -143,6 +143,10 @@ def validate_plan(value):
     other = 'account_ids' if selected == 'group_ids' else 'group_ids'
     if not s[selected] or s[other]:
         raise ConsoleError('请选择检测对象，按分组与按账号不能混用')
+    if 'max_saved_rounds' in out:
+        integer(out['max_saved_rounds'], '最多保留巡检轮次', 1, 200)
+        if s['mode'] != 'groups' or len(s['group_ids']) != 1:
+            raise ConsoleError('轮次上限仅支持单分组巡检')
     if not isinstance(out['kinds'], list) or not out['kinds'] or any(not isinstance(k,str) for k in out['kinds']) or len(out['kinds']) != len(set(out['kinds'])):
         raise ConsoleError('请选择有效检测项目')
     out['models'] = models(out['models'])

@@ -44,6 +44,7 @@ class ConsoleStore:
                     profile TEXT NOT NULL, value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS console_results_time ON console_results(slot);
                 CREATE INDEX IF NOT EXISTS console_results_plan ON console_results(plan_id,slot);
+                CREATE INDEX IF NOT EXISTS console_results_job ON console_results(job_id);
                 CREATE TABLE IF NOT EXISTS console_audit (
                     id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
                     object_id TEXT NOT NULL, created_at REAL NOT NULL);
@@ -55,6 +56,9 @@ class ConsoleStore:
                     message TEXT, results TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX IF NOT EXISTS self_jobs_user_time ON self_jobs(user_id, created_at);
             ''')
+            job_columns = {r['name'] for r in db.execute('PRAGMA table_info(console_jobs)')}
+            if 'results_pruned' not in job_columns:
+                db.execute('ALTER TABLE console_jobs ADD COLUMN results_pruned INTEGER NOT NULL DEFAULT 0')
             columns={r['name'] for r in db.execute('PRAGMA table_info(self_jobs)')}
             for name, definition in [('questions', "TEXT NOT NULL DEFAULT '[]'"),('group_id','INTEGER'),('group_name',"TEXT NOT NULL DEFAULT ''"),('share_content','INTEGER NOT NULL DEFAULT 0')]:
                 if name not in columns:
@@ -294,6 +298,14 @@ class ConsoleStore:
             rows = db.execute('SELECT * FROM console_jobs ORDER BY created_at DESC LIMIT 200').fetchall()
         return [self.job_row(row) for row in rows]
 
+    def empty_inspections(self, cutoff):
+        with self.db() as db:
+            rows = db.execute('''SELECT j.* FROM console_jobs j WHERE j.created_at >= ?
+                AND j.results_pruned = 0 AND j.status = 'completed_with_errors' AND j.source IN ('manual','timer')
+                AND json_array_length(j.snapshot, '$.targets') = 0
+                AND json_extract(j.snapshot, '$.preview.max_account_attempts') > 0''', (cutoff,)).fetchall()
+        return [self.job_row(row) for row in rows]
+
     @staticmethod
     def job_row(row):
         result = dict(row)
@@ -394,8 +406,47 @@ class ConsoleStore:
     def results(self):
         cutoff = time.time() - self.document('settings')['value']['retention']['artifacts_hours'] * 3600
         with self.db() as db:
-            rows = db.execute('SELECT * FROM console_results WHERE slot>=? ORDER BY slot DESC', (cutoff,)).fetchall()
+            rows = db.execute('''SELECT r.* FROM console_results r JOIN console_jobs j ON j.id=r.job_id
+                WHERE r.slot>=? AND j.results_pruned=0 ORDER BY r.slot DESC''', (cutoff,)).fetchall()
         return [{**dict(r), 'value': json.loads(r['value']), 'group_ids': json.loads(r['group_ids'])} for r in rows]
+
+    def quarantine_evidence(self, job_id, account_id):
+        with self.db() as db:
+            rows = db.execute('SELECT value FROM console_results WHERE job_id=? AND account_id=?',
+                              (job_id, account_id)).fetchall()
+        return [json.loads(row['value']) for row in rows]
+
+    def prune_results(self, cutoff, protected_jobs):
+        with self.db() as db:
+            for plan in db.execute('SELECT id,value FROM console_plans').fetchall():
+                value = json.loads(plan['value'])
+                limit = value.get('max_saved_rounds')
+                if limit is None:
+                    continue
+                # Count rounds started for the current group even when a plan
+                # used to point at a different group.
+                db.execute('''UPDATE console_jobs SET results_pruned=1 WHERE id IN (
+                    SELECT j.id FROM console_jobs j WHERE j.plan_id=? AND j.created_at>=?
+                      AND j.results_pruned=0 AND j.finished_at IS NOT NULL
+                      AND j.source IN ('manual','timer','cooldown')
+                      AND json_extract(j.snapshot, '$.plan.value.scope.mode')='groups'
+                      AND json_array_length(j.snapshot, '$.plan.value.scope.group_ids')=1
+                      AND json_extract(j.snapshot, '$.plan.value.scope.group_ids[0]')=?
+                      AND (EXISTS (SELECT 1 FROM console_results r WHERE r.job_id=j.id) OR (
+                        j.status='completed_with_errors' AND j.source IN ('manual','timer')
+                        AND json_array_length(j.snapshot, '$.targets')=0
+                        AND json_extract(j.snapshot, '$.preview.max_account_attempts') > 0))
+                    ORDER BY j.created_at DESC,j.rowid DESC LIMIT -1 OFFSET ?)''',
+                    (plan['id'], cutoff, value['scope']['group_ids'][0], limit))
+            db.execute('CREATE TEMP TABLE protected_inspection_jobs (id TEXT PRIMARY KEY)')
+            db.executemany('INSERT INTO protected_inspection_jobs VALUES (?)', ((i,) for i in protected_jobs))
+            db.execute('''DELETE FROM console_results WHERE (slot<? OR job_id IN (
+                    SELECT id FROM console_jobs WHERE results_pruned=1))
+                AND job_id NOT IN (SELECT id FROM protected_inspection_jobs)''', (cutoff,))
+            old = [row['id'] for row in db.execute('''SELECT id FROM console_jobs
+                WHERE (results_pruned=1 OR finished_at<?) AND status NOT IN ('running','queued')''', (cutoff,))]
+            db.execute('DELETE FROM console_audit WHERE created_at<?', (time.time() - 90 * 86400,))
+        return old
 
     def import_quality_results(self,job,rows):
         targets={a['id']:a for a in job['snapshot']['targets']}

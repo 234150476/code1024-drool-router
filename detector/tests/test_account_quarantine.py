@@ -169,6 +169,20 @@ class QuarantineTests(unittest.TestCase):
             self.assertFalse(self.api.account['schedulable'])
         self.assertEqual(self.api.writes, [(1, False)])
 
+    def test_retention_hides_old_evidence_until_quarantine_no_longer_needs_it(self):
+        store = self.s.store
+        plan = store.plan(self.plan['id'])
+        self.s.save_plan({**plan['value'], 'max_saved_rounds': 1}, 'admin', plan['id'], plan['revision'])
+        record = self.quarantine()
+        old_job = record['evidence_job_id']
+        self.job('最终答案：323')
+        self.s.cleanup()
+        self.assertNotIn(old_job, {row['job_id'] for row in store.results()})
+        self.assertEqual(conclusion(record['profile']['value']['questions'], store.quarantine_evidence(old_job, 1)), 'fail')
+        self.q.handover(1, 'admin')
+        self.s.cleanup()
+        self.assertEqual(store.quarantine_evidence(old_job, 1), [])
+
     def test_restart_interrupted_recheck_reenters_cooldown(self):
         self.quarantine(); self.recheck()
         new = ConsoleService(self.tmp.name, start=False)

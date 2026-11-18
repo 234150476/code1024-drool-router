@@ -350,6 +350,21 @@ class ConsoleTests(unittest.TestCase):
         value['published']=False;self.service.save_plan(value,'1',self.plan['id'],self.plan['revision'])
         self.assertEqual(self.call(path, token=USER)[0],404)
 
+    def test_artwork_preview_extracts_html_from_model_prose(self):
+        from detector.console_api import artwork_document
+        original = ('下面是完整作品。\n```html\n<!DOCTYPE html>\n<html lang="zh"><head>'
+                    '<style>body{display:grid;place-items:center}</style></head><body>'
+                    '<svg viewBox="0 0 800 500"><animate attributeName="opacity"/></svg>'
+                    '</body></html>\n```\n保存后即可运行。')
+        rendered = artwork_document(original)
+        self.assertTrue(rendered.startswith('<!doctype html><html lang="zh"><head>'))
+        self.assertIn('place-items:center', rendered)
+        self.assertIn('<animate', rendered)
+        for extra in ('下面是', '```', '保存后'):
+            self.assertNotIn(extra, rendered)
+        svg = '<svg viewBox="0 0 10 10"><circle r="2"/></svg>'
+        self.assertIn('<body>'+svg+'</body>', artwork_document('示例：\n'+svg+'\n结束'))
+
     def test_private_artwork_links_require_ownership_and_cannot_be_forged(self):
         job=self.service.store.create_self_job('1',7,'My key','fixture','high',['drawing'])
         self.service.store.update_self_job(job['id'],status='completed',results=[{'kind':'drawing','title':'作品','question_type':'drawing','status':'pass','rounds':[{'round':1,'status':'pass','response':'<svg><script>document.title="animation"</script></svg>'}]}])

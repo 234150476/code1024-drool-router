@@ -181,12 +181,10 @@ class PublicResults:
                 value['account_name'] = next((a['name'] for a in targets if a['id']==row['account_id']), '')
             rows.append(value)
         cutoff=time.time()-store.document('settings')['value']['retention']['artifacts_hours']*3600
-        for job in store.jobs():
+        for job in store.empty_inspections(cutoff):
             snapshot = job['snapshot']
             plan = plans.get(job['plan_id'])
-            if (not plan or job['created_at'] < cutoff or job['status'] != 'completed_with_errors' or
-                    job['source'] not in ('manual', 'timer') or snapshot['targets'] or
-                    not snapshot.get('preview', {}).get('max_account_attempts')):
+            if not plan:
                 continue
             scope = snapshot['plan']['value']['scope']
             if scope != plan['scope'] or group_id != store.public_id('group', 'g'+str(scope['group_ids'][0])):
@@ -207,7 +205,13 @@ class PublicResults:
                     batch_id=store.public_id('self-batch',job['id']),
                     model=job['model'],effort=job['effort'],slot=job['created_at'],content_available=bool(job.get('share_content')))
                 rows.append(value)
-        return sorted(rows,key=lambda r:r['slot'],reverse=True)[:300]
+        rows.sort(key=lambda row: row['slot'], reverse=True)
+        batches = {source: {} for source in ('admin', 'user')}
+        for row in rows:
+            source = batches[row['source']]
+            if len(source) < 300:
+                source[row['batch_id']] = None
+        return [row for row in rows if row['batch_id'] in batches[row['source']]]
 
     def record(self, ident, include_hidden=False):
         allowed=next((r for g in self.projection()['groups'] for r in self.history(g['id'], include_accounts=include_hidden) if r['id']==ident),None)

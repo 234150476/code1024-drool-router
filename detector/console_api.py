@@ -141,8 +141,10 @@ def public(handler, service, path, token='', identity=None):
     elif match := re.fullmatch(r'/api/public/runs/([a-f0-9]{24})(/artifact)?', path):
         value = service.public.run(match[1], artifact=bool(match[2]))
         if match[2]:
-            handler.is_artifact = True
-            handler.send_file(value, 'text/html; charset=utf-8')
+            try:
+                return render(handler, value.read_text())
+            except FileNotFoundError:
+                raise ConsoleError('作品已过期', 404) from None
         else:
             handler.send_json(value)
     else:
@@ -208,11 +210,34 @@ def round_index(handler):
     return int(raw)
 
 
+def artwork_document(response):
+    content = str(response).strip()
+    blocks = re.findall(r'^ {0,3}(`{3,}|~{3,})(?:html|svg|xml)?[^\S\r\n]*\r?\n(.*?)^ {0,3}\1[^\S\r\n]*$',
+                        content, flags=re.I | re.M | re.S)
+    fenced = next((block.strip() for _, block in blocks if re.search(r'<svg\b', block, re.I)), None)
+    if fenced is not None:
+        content = fenced
+    defaults = ('<meta charset="utf-8"><style>:where(body){margin:0;background:#fff}'
+                ':where(svg){max-width:100%;height:auto}</style>')
+    document = re.search(r'<html\b[^>]*>.*</html\s*>', content, flags=re.I | re.S)
+    if document:
+        content = document[0]
+        head = re.search(r'<head\b[^>]*>', content, re.I)
+        if head:
+            return '<!doctype html>' + content[:head.end()] + defaults + content[head.end():]
+        start = content.index('>') + 1
+        return '<!doctype html>' + content[:start] + '<head>' + defaults + '</head>' + content[start:]
+    if fenced is None:
+        svg = re.search(r'<svg\b[^>]*>.*</svg\s*>', content, flags=re.I | re.S)
+        if svg and not re.match(r'<(?:svg|style|div|main|section)\b', content, re.I):
+            content = svg[0]
+    return '<!doctype html><html><head>' + defaults + '</head><body>' + content + '</body></html>'
+
+
 def render(handler, response):
-    content = re.sub(r'^```(?:html|svg|xml)?\s*\n?|\n?```\s*$', '', str(response).strip(), flags=re.I)
     # The HTTP artifact CSP and opaque iframe sandbox own the boundary. Inline
     # scripts can animate SVG but receive no origin, network, forms or navigation.
-    data = ('<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#fff}svg{max-width:100%;height:auto}</style>'+content).encode()
+    data = artwork_document(response).encode()
     handler.is_artifact = True
     handler.send_response(200)
     handler.send_header('Content-Type', 'text/html; charset=utf-8')

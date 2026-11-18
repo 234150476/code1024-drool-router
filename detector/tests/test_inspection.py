@@ -202,3 +202,39 @@ class InspectionFallbackTests(unittest.TestCase):
         history = self.service.public.history(self.service.store.public_id('group', 'g3'))
         self.assertEqual([r['status'] for r in history], ['unavailable'])
         self.assertEqual(self.service.public.record(history[0]['id'])['rounds'], [])
+
+    def test_retention_prunes_old_rounds_and_artifacts_by_group(self):
+        from detector.inspection import save
+        self.plan = save(self.service, {**self.payload, 'max_saved_rounds': 1}, 'admin',
+                         self.plan['id'], self.plan['revision'])
+        old = self.run_job(lambda *a, **kw: {'text': '最终答案：323' if kw['prompt'].startswith('计算') else '最终答案：3'})
+        store = self.service.store
+        old_dir = store.private / 'jobs' / old['id']
+        self.assertTrue(old_dir.exists())
+        self.assertEqual(len(store.results()), 2)
+        current = self.run_job(lambda *a, **kw: {'text': '最终答案：323' if kw['prompt'].startswith('计算') else '最终答案：3'})
+        other = save(self.service, {**self.payload, 'group_id': 4}, 'admin')
+        self.assertEqual(other['max_saved_rounds'], 20)
+        self.plan = other
+        other_job = self.run_job(lambda *a, **kw: {'text': '最终答案：323' if kw['prompt'].startswith('计算') else '最终答案：3'})
+        self.service.cleanup()
+        self.service.cleanup()
+        self.assertFalse(old_dir.exists())
+        self.assertEqual(store.quarantine_evidence(old['id'], 1), [])
+        self.assertEqual({r['job_id'] for r in store.results()}, {current['id'], other_job['id']})
+        for gid in ('g3', 'g4'):
+            history = self.service.public.history(store.public_id('group', gid))
+            self.assertEqual({row['kind'] for row in history}, {'numeric', 'choice'})
+
+    def test_empty_inspection_history_is_pruned_with_same_limit(self):
+        from detector.inspection import save
+        self.plan = save(self.service, {**self.payload, 'max_saved_rounds': 1}, 'admin',
+                         self.plan['id'], self.plan['revision'])
+        self.service.store.save_inventory([], self.groups, 'admin')
+        old = self.run_job(lambda *a, **kw: self.fail('probe called'))
+        self.run_job(lambda *a, **kw: self.fail('probe called'))
+        self.service.cleanup()
+        history = self.service.public.history(self.service.store.public_id('group', 'g3'))
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]['status'], 'unavailable')
+        self.assertEqual(self.service.store.job(old['id'])['results_pruned'], 1)

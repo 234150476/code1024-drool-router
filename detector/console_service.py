@@ -372,11 +372,11 @@ class ConsoleService:
     def cleanup(self):
         retention = self.store.document('settings')['value']['retention']
         cutoff = time.time() - retention['artifacts_hours'] * 3600
-        with self.store.db() as db:
-            db.execute('DELETE FROM console_results WHERE slot<?', (cutoff,))
-            # Retain lightweight task metadata for 30 days, remove expensive worker output at configured expiry.
-            old = [r['id'] for r in db.execute("SELECT id FROM console_jobs WHERE finished_at<? AND status NOT IN ('running','queued')", (cutoff,))]
-            db.execute('DELETE FROM console_audit WHERE created_at<?', (time.time() - 90 * 86400,))
+        from .quarantine_store import CLOSED
+        with self.lock:
+            protected = {job_id for record in self.quarantine.records.entries() if record['state'] not in CLOSED
+                         for job_id in (record['evidence_job_id'], record.get('recheck_job_id')) if job_id}
+            old = self.store.prune_results(cutoff, protected)
         for ident in old:
             path = self.store.private / 'jobs' / ident
             if path.exists():

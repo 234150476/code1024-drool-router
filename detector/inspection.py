@@ -16,17 +16,19 @@ def describe(plan):
         return None
     platform, spec = enabled[0]
     return {'id': plan['id'], 'revision': plan['revision'], 'group_id': scope['group_ids'][0],
+            'group_name': value['public_name'],
             'enabled': value['enabled'], 'model': spec['model'], 'effort': spec['effort'],
             'platform': platform, 'schedule': value['schedule'], 'question_ids': value['kinds'],
             'questions': value.get('questions', []), 'published': value['published'],
             'max_account_attempts': inspection_attempt_limit(value) or DEFAULT_ACCOUNT_ATTEMPTS,
+            'max_saved_rounds': value.get('max_saved_rounds'),
             'quarantine': {'enabled': False, 'cooldown_minutes': 60, 'hide_failed_results': True,
                            **value.get('quarantine', {})}}
 
 
 def save(service, payload, actor, ident=None, revision=None):
     required = {'group_id', 'enabled', 'model', 'effort', 'question_ids', 'questions', 'schedule'}
-    if not isinstance(payload, dict) or set(payload)-{'quarantine', 'max_account_attempts'} != required:
+    if not isinstance(payload, dict) or set(payload)-{'quarantine', 'max_account_attempts', 'max_saved_rounds'} != required:
         raise ConsoleError('分组巡检配置字段不完整或包含未知字段')
     integer(payload['group_id'], '分组', 1, 2147483647)
     boolean(payload['enabled'], '启用开关')
@@ -55,12 +57,14 @@ def save(service, payload, actor, ident=None, revision=None):
              'schedule': schedule(payload['schedule']), 'selection': {'mode': 'recent_active', 'count': 1},
              'published': True, 'show_accounts': False, 'show_answers': True, 'show_artifacts': True,
              'write_priority': False, 'write_callable': False}
+    current = service.store.plan(ident)['value'] if ident else {}
     if 'max_account_attempts' in payload:
         value['selection']['max_account_attempts'] = integer(
             payload['max_account_attempts'], '每轮最多尝试账号数', 1, MAX_ACCOUNT_ATTEMPTS)
-    elif ident:
-        current = service.store.plan(ident)['value'].get('selection', {})
-        if 'max_account_attempts' in current:
-            value['selection']['max_account_attempts'] = current['max_account_attempts']
+    elif 'max_account_attempts' in current.get('selection', {}):
+        value['selection']['max_account_attempts'] = current['selection']['max_account_attempts']
+    max_saved = payload.get('max_saved_rounds', current.get('max_saved_rounds') if ident else 20)
+    if max_saved is not None:
+        value['max_saved_rounds'] = max_saved
     value['quarantine'] = deepcopy(payload.get('quarantine', {'enabled': False, 'cooldown_minutes': 60}))
     return describe(service.save_plan(value, actor, ident, revision))

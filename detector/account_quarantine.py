@@ -142,8 +142,7 @@ class AccountQuarantine:
             enabled = bool(record.get('recheck_job_id'))
             job = self.store.job(record['recheck_job_id'] if enabled else record['evidence_job_id'])
             questions = record['profile']['value']['questions']
-            rows = [r['value'] for r in self.store.results()
-                    if r['job_id'] == job['id'] and r['account_id'] == account_id]
+            rows = self.store.quarantine_evidence(job['id'], account_id)
             if (job['status'] not in ('completed', 'completed_with_errors') or
                     not job.get('finished_at') or not 0 <= time.time()-job['finished_at'] <=
                     plan['value']['quarantine']['cooldown_minutes']*60 or
@@ -230,7 +229,7 @@ class AccountQuarantine:
         plan = self.current_plan(record)
         if not plan:
             return
-        rows = [r['value'] for r in self.store.results() if r['job_id'] == job['id'] and r['account_id'] == record['account_id']]
+        rows = self.store.quarantine_evidence(job['id'], record['account_id'])
         passed = (job['status'] == 'completed' and job.get('finished_at') and
                   time.time()-job['finished_at'] <= plan['value']['quarantine']['cooldown_minutes']*60 and
                   conclusion(record['profile']['value']['questions'], rows) == 'pass')
