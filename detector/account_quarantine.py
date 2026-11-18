@@ -121,6 +121,44 @@ class AccountQuarantine:
                 self.service.stop_job(record['recheck_job_id'], actor)
         return {'state': 'manual', 'scheduling_changed': False}
 
+    def retry(self, account_id, actor):
+        """Explicit admin retry; permission repair alone never revives old writes."""
+        with self.service.lock:
+            record = self.records.get(account_id)
+            if not record:
+                raise ConsoleError('剔除记录不存在', 404)
+            if record['state'] != 'blocked':
+                raise ConsoleError('仅需要管理员处理的记录可以重试', 409)
+            if record.get('error_code') not in ('HTTP_401', 'HTTP_403', 'QUARANTINE_HTTP_401',
+                    'QUARANTINE_HTTP_403', 'QUARANTINE_UNCONFIRMED', 'QUARANTINE_READBACK_FAILED',
+                    'QUARANTINE_REJECTED', 'QUARANTINE_WRITE_LIMIT'):
+                raise ConsoleError('账号身份或状态发生变化，请先人工核查并停止托管')
+            try:
+                plan = self.current_plan(record)
+            except ProbeError:
+                raise ConsoleError('检测范围已变化，不能重试旧操作') from None
+            if not plan:
+                raise ConsoleError('请先启用此分组巡检及自动剔除策略')
+            enabled = bool(record.get('recheck_job_id'))
+            job = self.store.job(record['recheck_job_id'] if enabled else record['evidence_job_id'])
+            questions = record['profile']['value']['questions']
+            rows = [r['value'] for r in self.store.results()
+                    if r['job_id'] == job['id'] and r['account_id'] == account_id]
+            if (job['status'] not in ('completed', 'completed_with_errors') or
+                    not job.get('finished_at') or not 0 <= time.time()-job['finished_at'] <=
+                    plan['value']['quarantine']['cooldown_minutes']*60 or
+                    conclusion(questions, rows) != ('pass' if enabled else 'fail')):
+                raise ConsoleError('原检测证据不完整或已过期，请停止托管后重新巡检')
+            if not enabled:
+                current = {(q['id'], q['version']) for q in gradable(plan['value'].get('questions', []))}
+                if current != {(q['id'], q['version']) for q in questions}:
+                    raise ConsoleError('标准答案题已变化，请停止托管后按新题重新巡检')
+            record = self.records.change(record, action='quarantine_retry', actor=actor,
+                                         state='restoring' if enabled else 'disabling', attempts=0, due_at=0, error_code=None)
+            self.write(record, enabled)
+            latest = self.records.get(account_id)
+            return {'account_id': account_id, 'state': latest['state'], 'error_code': latest.get('error_code')}
+
     def on_complete(self, job):
         if job['source'] == 'cooldown':
             marker = job['snapshot'].get('recovery', {})

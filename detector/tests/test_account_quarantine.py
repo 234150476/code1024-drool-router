@@ -223,6 +223,84 @@ class QuarantineTests(unittest.TestCase):
         self.assertEqual(row['state'], 'blocked'); self.assertEqual(row['error_code'], 'QUARANTINE_HTTP_403')
         self.assertEqual(len(self.api.writes), 1)
 
+    def blocked(self):
+        self.api.error = 'QUARANTINE_HTTP_403'
+        self.q.on_complete(self.job())
+        self.assertEqual(self.q.records.get(1)['state'], 'blocked')
+        self.api.error = None
+        return self.q.records.get(1)
+
+    def test_explicit_retry_after_permission_repair_disables_and_cools_without_model_request(self):
+        self.blocked()
+        result = self.q.retry(1, 'admin')
+        self.assertEqual(result['state'], 'cooling')
+        self.assertFalse(self.api.account['schedulable'])
+        self.assertEqual(self.api.writes, [(1, False), (1, False)])
+        self.assertEqual(len(self.s.store.jobs()), 1)
+        with self.assertRaises(ConsoleError): self.q.retry(1, 'admin')
+
+    def test_retry_after_restoration_permission_repair_requires_current_pass(self):
+        self.quarantine(); job = self.recheck(); self.results(job, '最终答案：323')
+        self.api.error = 'QUARANTINE_HTTP_403'; self.q.on_complete(self.s.store.job(job['id']))
+        self.assertEqual(self.q.records.get(1)['state'], 'blocked')
+        self.assertFalse(self.api.account['schedulable'])
+        self.api.error = None
+        self.assertEqual(self.q.retry(1, 'admin')['state'], 'recovered')
+        self.assertTrue(self.api.account['schedulable'])
+
+    def test_retry_rejects_old_evidence_changed_questions_disabled_policy_and_handover(self):
+        record = self.blocked(); job = self.s.store.job(record['evidence_job_id'])
+        self.s.store.update_job(job['id'], finished_at=time.time()-3601)
+        with self.assertRaises(ConsoleError): self.q.retry(1, 'admin')
+        self.s.store.update_job(job['id'], finished_at=time.time())
+        self.plan = self.new_plan(kind='choice')
+        with self.assertRaises(ConsoleError): self.q.retry(1, 'admin')
+        self.plan = self.new_plan(enabled=False)
+        with self.assertRaises(ConsoleError): self.q.retry(1, 'admin')
+        self.plan = self.new_plan()
+        self.q.handover(1, 'admin')
+        with self.assertRaises(ConsoleError): self.q.retry(1, 'admin')
+        self.assertTrue(self.api.account['schedulable'])
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_real_gateway_permission_contract_403_retry_and_passed_recovery(self):
+        state = deepcopy(ACCOUNT); calls = []; permissions = {'accounts.read', 'accounts.schedule'}
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def reply(self, value, status=200):
+                data = json.dumps({'code': 0, 'data': value}).encode()
+                self.send_response(status); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+            def do_GET(self): self.reply(state)
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                calls.append((self.path, body))
+                # Sub2API's scopedAccountFieldPermissions maps schedulable to accounts.status.
+                if 'accounts.status' not in permissions:
+                    return self.reply({'error': 'operation not authorized'}, 403)
+                if self.path != '/api/v1/admin/accounts/1/schedulable' or set(body) != {'schedulable'}:
+                    return self.reply({}, 400)
+                state.update(body); self.reply(state)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            api = Sub2API('http://127.0.0.1:'+str(server.server_port), 'fixture-restricted-key')
+            with patch.object(self.q, 'api', return_value=api):
+                self.q.on_complete(self.job())
+                self.assertEqual(self.q.records.get(1)['error_code'], 'QUARANTINE_HTTP_403')
+                self.assertTrue(state['schedulable'])
+                permissions.remove('accounts.schedule'); permissions.add('accounts.status')
+                self.assertEqual(self.q.retry(1, 'admin')['state'], 'cooling')
+                self.assertFalse(state['schedulable'])
+                job = self.recheck(); self.results(job, '最终答案：323')
+                self.q.on_complete(self.s.store.job(job['id']))
+                self.assertTrue(state['schedulable'])
+                self.assertEqual(self.q.records.get(1)['state'], 'recovered')
+            self.assertEqual(calls, [('/api/v1/admin/accounts/1/schedulable', {'schedulable': False}),
+                ('/api/v1/admin/accounts/1/schedulable', {'schedulable': False}),
+                ('/api/v1/admin/accounts/1/schedulable', {'schedulable': True})])
+        finally:
+            server.shutdown(); thread.join(); server.server_close()
+
     def test_transient_write_has_bounded_retries_and_delays(self):
         self.api.error = 'QUARANTINE_UNCONFIRMED'; self.q.on_complete(self.job())
         self.q.tick(); self.assertEqual(len(self.api.writes), 1)

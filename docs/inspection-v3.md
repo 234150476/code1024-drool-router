@@ -70,8 +70,15 @@
 
 关闭剔除或停用分组计划，会取消后续复测并停止自动操作，已经剔除的账号不会因此自动恢复；重新启用后继续处理，或使用「停止托管（保持当前调度状态）」后到网关人工处理。权限不足、身份/分组变化或写入多次无法确认会显示需要管理员处理。状态、写入意图、复测任务和审计持久化，重启不会把账号先恢复。网关调度 API 无版本比较能力，外部并发修改不能获得强所有权保证；人工处理前应先停止托管。
 
-自动剔除需要单独的受限管理员 Key，最小权限 `accounts.read`、`accounts.schedule`（如需要读取分组，再授予 `groups.list.read`），仅授权目标分组、平台和账号类型。不扩权原只读巡检 Key。管理员可在「自动剔除管理」保存，文件位于 `/data/private/quarantine-key`，权限 0600，不回显。保存仅验证读取权限，不通过真实修改账号来试写；实际权限不足会明确记录 403 并停止自动处理该账号。
+自动剔除需要单独的受限管理员 Key，最小权限 `accounts.read`、`accounts.status`（如需要读取分组，再授予 `groups.list.read`），仅授权目标分组、平台和账号类型。不扩权原只读巡检 Key。管理员可在「自动剔除管理」保存，文件位于 `/data/private/quarantine-key`，权限 0600，不回显。保存仅验证读取权限，不通过真实修改账号来试写；实际权限不足会明确记录 403 并停止自动处理该账号。
 
 新增 API 均只允许管理员登录并校验写入来源：`PUT /api/admin/quarantine-key`、`GET /api/admin/quarantines`、`POST /api/admin/quarantines/:account_id/handover`。管理员可通过 `/api/admin/records/:id` 和对应 `/artifact` 查看隐藏结果；作品仍使用受限 sandbox 和短期预览凭证，普通用户不能访问。
 
 本次数据库变更只新增 `inspection_quarantine` 表和糖果默认值迁移标记，保留旧隔离表但不复用其语义。首次升级时没有托管记录，旧计划默认关闭剔除。回滚前需先停用策略、处理已被剔除的真实账号并备份数据；旧版本不会自动恢复新版本剔除的账号。
+
+
+## 调度权限与权限修复（v0.3.4）
+
+Sub2API 的 `schedulable` 字段和 `/accounts/:id/schedulable` 接口要求 `accounts.status`，`accounts.schedule` 只控制并发、优先级及有效期。专用剔除 Key 应授予 `accounts.read`、`accounts.status`，按需增加 `groups.list.read`；不需要 `accounts.schedule`。服务仍只写 `schedulable`，不修改账号 status。
+
+遇到 403 时，模型测试仍保留其真实判定，账号托管记录进入“需要管理员处理”，不会把回写失败伪装成成功剔除。修复 Key 后，可在管理页点击“修复后核验并重试”（`POST /api/admin/quarantines/:account_id/retry`）；不会重新请求模型，而是检查策略、账号身份、证据完整性与有效期，再尝试原调度操作。剔除重试要求当前标准答案题与原证据一致；恢复重试要求原复测通过。旧证据超过当前冷却时长、题目已变化、策略已关闭或账号已转人工时拒绝写入。

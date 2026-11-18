@@ -1,7 +1,7 @@
 import React,{useEffect,useState} from 'react';
 import {request} from './console-client.js';
 import {clock} from './inspection-view.js';
-import {gradableQuestion,managedState,quarantineState} from './quarantine-policy.js';
+import {gradableQuestion,managedState,quarantineState,quarantineError} from './quarantine-policy.js';
 
 export function QuarantinePolicy({value,questions,onChange,keyReady}){
   const supported=questions.some(gradableQuestion);
@@ -25,14 +25,16 @@ export default function QuarantineAdmin({onCredentialChange}){
   return <section className="ir-panel"><h2>自动剔除管理</h2><p>仅管理员可见。每个分组独立启用；没有启用的分组只检测、展示结果。</p>
     {error&&<p className="ir-error" role="alert">{error}</p>}{message&&<p className="ir-message" role="status">{message}</p>}
     <details className="ir-credentials"><summary>专用调度凭据 · {data?.key_ready?'已配置':'待配置'}</summary>
-      <p>使用单独的受限管理员 Key，至少需要 accounts.read、accounts.schedule；范围仅授权需要检测的分组和账号。原定时巡检 Key 可继续保持只读。</p>
+      <p>使用单独的受限管理员 Key，至少需要 accounts.read、accounts.status；范围仅授权需要检测的分组和账号。原定时巡检 Key 可继续保持只读。</p>
+      <p className="ir-note">网关将调度开关归于 accounts.status；accounts.schedule 用于并发、优先级与有效期，不能替代该权限。服务始终只修改 schedulable。</p>
       <label className="ir-field"><span>专用调度 API Key</span><input type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder="保存后不回显"/></label>
       <p className="ir-note">保存时仅验证读取权限，不修改真实账号；调度写权限在实际执行时确认，权限不足会显示错误并停止该账号的自动处理。</p>
       <button disabled={busy||!key} onClick={()=>act(async()=>{await request('/api/admin/quarantine-key','PUT',{key});setKey('');await onCredentialChange();},'专用 Key 已保存，尚未修改任何账号。')}>验证读取并保存</button>
     </details>
     {!data?<p>正在加载剔除记录…</p>:!data.entries.length?<p className="ir-note">暂无自动剔除记录。</p>:data.entries.map(row=><div className="ir-own-result" key={row.account_id}><h3>{row.account?.name||'账号'} · #{row.account_id}</h3>
       <p>{quarantineState(row.state)}{managedState(row.state)&&!row.policy_enabled?' · 策略已暂停，保持当前调度状态':''}{row.due_at&&managedState(row.state)?' · 下次检查 '+clock(row.due_at):''}</p>
-      {row.error_code&&<p className="ir-error">{row.error_code}</p>}
+      {row.error_code&&<p className="ir-error">{quarantineError(row.error_code)}{quarantineError(row.error_code)!==row.error_code?'（'+row.error_code+'）':''}</p>}
+      {row.state==='blocked'&&<button disabled={busy||!row.policy_enabled} onClick={()=>act(()=>request(`/api/admin/quarantines/${row.account_id}/retry`,'POST',{}),'已重新核验并尝试处理，请查看账号状态；未重新请求模型。')}>修复后核验并重试</button>}
       {managedState(row.state)&&<button disabled={busy} onClick={()=>act(()=>request(`/api/admin/quarantines/${row.account_id}/handover`,'POST',{}),'已停止自动托管，账号当前调度状态保持不变；请到网关人工处理。')}>停止托管（保持当前调度状态）</button>}
     </div>)}
     {data?.events.length>0&&<details><summary>最近处理记录</summary>{data.events.map((event,index)=><p key={index}>{clock(event.created_at)} · {event.action} · {event.object_id}</p>)}</details>}

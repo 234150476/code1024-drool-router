@@ -295,6 +295,10 @@ def admin(h, s, path, body, token, actor):
         if method == 'POST':
             fields(body, [])
             return h.send_json(s.quarantine.handover(int(match[1]), actor))
+    if match := re.fullmatch(r'/api/admin/quarantines/([1-9][0-9]{0,18})/retry', path):
+        if method == 'POST':
+            fields(body, [])
+            return h.send_json(s.quarantine.retry(int(match[1]), actor))
     if path=='/api/admin/questions' and method=='PUT':
         fields(body,['value','revision'])
         return h.send_json(store.save_document('questions',body['value'],body['revision'],actor))

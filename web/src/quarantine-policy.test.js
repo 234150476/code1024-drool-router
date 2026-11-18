@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {defaultQuarantine,gradableQuestion,policyForQuestions,managedState,quarantineState} from './quarantine-policy.js';
+import {defaultQuarantine,gradableQuestion,policyForQuestions,managedState,quarantineState,quarantineError} from './quarantine-policy.js';
 test('automatic quarantine defaults off and only accepts enabled closed-answer questions',()=>{
   assert.equal(defaultQuarantine.enabled,false);
   for(const kind of ['number','choice','json'])assert.equal(gradableQuestion({kind,enabled:true}),true);
@@ -19,3 +19,5 @@ test('closed entries cannot offer automatic control and blocked entries remain v
 });
 
 test('mixed questions keep quarantine available when at least one can be graded',()=>{assert.equal(policyForQuestions({enabled:true},[{kind:'drawing',enabled:true},{kind:'number',enabled:true}]).enabled,true);});
+
+test('permission denial explains the actual scheduling switch permission',()=>{assert.match(quarantineError('QUARANTINE_HTTP_403'),/accounts.status/);assert.doesNotMatch(quarantineError('QUARANTINE_HTTP_403'),/accounts.schedule/);assert.equal(quarantineError('RECHECK_NOT_PASSED'),'RECHECK_NOT_PASSED');});

@@ -130,7 +130,7 @@ class ConsoleService:
             raise ConsoleError('尚未配置机器凭据，无法启用定时；可关闭定时后保存')
         with self.lock:
             if value.get('quarantine', {}).get('enabled') and not self.quarantine.key():
-                raise ConsoleError('启用自动剔除前，请先配置带 accounts.read、accounts.schedule 权限的专用调度 Key')
+                raise ConsoleError('启用自动剔除前，请先配置带 accounts.read、accounts.status 权限的专用调度 Key')
             plan = self.store.save_plan(value, actor, ident, revision)
             if not value['enabled'] or not value.get('quarantine', {}).get('enabled'):
                 for record in self.quarantine.records.entries():

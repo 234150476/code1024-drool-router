@@ -150,7 +150,8 @@ class ConsoleTests(unittest.TestCase):
         for token, expected in [(None, 401), (USER, 403), (ADMIN, 200)]:
             self.assertEqual(self.call('/api/admin/quarantines', token=token)[0], expected)
         for path, method, payload in [('/api/admin/quarantine-key', 'PUT', {'key': 'fixture-scheduling-key'}),
-                                      ('/api/admin/quarantines/1/handover', 'POST', {})]:
+                                      ('/api/admin/quarantines/1/handover', 'POST', {}),
+                                      ('/api/admin/quarantines/1/retry', 'POST', {})]:
             self.assertEqual(self.call(path, payload, USER, method)[0], 403)
             self.assertEqual(self.call(path, payload, ADMIN, method, origin='https://evil.test')[0], 403)
         self.assertEqual(self.call('/api/admin/quarantine-key', {'key': 'short'}, ADMIN, 'PUT')[0], 400)
@@ -162,6 +163,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertTrue(self.call('/api/admin/inspections', token=ADMIN)[1]['capabilities']['quarantine_key_ready'])
         self.assertNotIn('fixture-scheduling-key', json.dumps(self.call('/api/admin/quarantines', token=ADMIN)[1]))
         self.assertEqual(self.call('/api/admin/quarantines/999/handover', {}, ADMIN, 'POST')[0], 404)
+        self.assertEqual(self.call('/api/admin/quarantines/999/retry', {}, ADMIN, 'POST')[0], 404)
 
     def test_admin_record_details_and_artwork_require_admin_including_preview_grants(self):
         self.service.store.save_inventory([{**ACCOUNTS[0], 'schedulable': True, 'last_used_at': time.time()}], GROUPS, 'admin')

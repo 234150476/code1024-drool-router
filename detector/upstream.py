@@ -472,7 +472,7 @@ class Sub2API:
                     response = session.post(self.base+'/api/v1/admin/accounts/'+str(account_id)+'/schedulable',
                         headers=self.admin_headers(), json={'schedulable': enabled}, timeout=(5, 15), allow_redirects=False)
                     if response.status_code != 200:
-                        raise ProbeError('QUARANTINE_HTTP_'+str(response.status_code), '网关拒绝调度更新，请检查专用 Key 的 accounts.schedule 权限')
+                        raise ProbeError('QUARANTINE_HTTP_'+str(response.status_code), '网关拒绝调度更新，请检查专用 Key 的 accounts.status 权限及授权范围')
                     if response.json().get('code', 0) != 0:
                         raise ProbeError('QUARANTINE_REJECTED', '网关拒绝调度更新')
             except (requests.RequestException, ValueError):
