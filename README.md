@@ -1,112 +1,92 @@
-> **v0.3.5**：分组巡检遇到限额或账号临时不可用时，可按优先级顺延。每轮尝试账号数默认 3 个，可按分组配置。支持多题巡检、可选的明确答错自动剔除、冷却复测与通过恢复。详见 [分组巡检说明](docs/inspection-v3.md)。
+# Sub2API 模型质量巡检
 
-> **code1024-drool-router**：基于 AI Drool Router 二开的独立质量服务，提供公开检测结果、管理员控制台与使用个人 Key 的自助检测，配套 code1024 的主题和嵌入页面。
-> 二开仓库：[daQzi/code1024-drool-router](https://github.com/daQzi/code1024-drool-router)。部署本版请先看 [独立服务部署说明](docs/code1024-standalone.md)。定时与回写默认关闭；下方保留上游说明，配置差异以独立说明为准。
+为 [Sub2API](https://github.com/Wei-Shaw/sub2api) 提供分组定时巡检、用户 Key 自助检测和结果看板。服务通过 Sub2API 的现有 API 接入，独立运行在 Docker 容器中，可通过后台的自定义菜单嵌入。接入无需修改 Sub2API 源码或直连其数据库。
 
-<div align="center">
+## 功能
 
-<h1>💧 AI 流口水降智调度</h1>
+- **分组巡检**。按分组配置模型、思考强度、题目、巡检间隔和暂停时段。遇到上游限额、超时等故障，可在同组内按优先级换账号继续，每轮尝试上限可配置。
+- **多题检测与结果回看**。支持数值、选择、JSON 等标准答案题，也可以用「鹈鹕骑自行车」等 HTML/SVG 题目观察模型输出。结果保留原回答、判定、耗时和作品，单独显示请求故障与额度不足。
+- **用户 Key 自助检测**。用户登录 Sub2API 后选择自己的 API Key，通过网关调用模型，沿用该 Key 的分组权限、额度和计费。结果默认仅本人可见，可主动分享到所属分组。
+- **可选的自动剔除与复测**。启用后，标准答案题明确答错可暂时停用对应账号的调度，对该账号所属的所有分组生效。冷却到期后复测原账号，通过后恢复调度。此功能默认关闭，需要单独配置可修改账号调度状态的管理员 Key。
+- **结果访问控制**。默认登录后可查看分组结果，管理员可开放匿名查看。账号信息仅管理员可见。
 
-<strong>你的 AI 现在还在流口水吗？</strong>
+## 界面截图
 
-<p>
-  <a href="https://noonwake-ai.github.io/ai-drool-router/"><strong>在线 Demo</strong></a> ·
-  <a href="docs/install.md"><strong>让 AI 帮你装</strong></a> ·
-  <a href="README.en.md">English</a>
-</p>
+### 分组巡检结果
 
-<p>
-  <img alt="License" src="https://img.shields.io/badge/License-LGPL--3.0-blue.svg?style=for-the-badge">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-green.svg?style=for-the-badge&logo=python&logoColor=white">
-  <img alt="Sub2API" src="https://img.shields.io/badge/Sub2API-required-d5b769.svg?style=for-the-badge">
-</p>
+![分组巡检的历史记录和 SVG 作品预览](docs/assets/screenshots/group-results.png)
 
-</div>
+### 巡检设置
 
-![AI 流口水降智调度](docs/assets/diagrams/zh/hero.svg)
+![分组、模型、账号尝试上限与多题巡检配置](docs/assets/screenshots/inspection-settings.png)
 
-## 一句话
+### Key 自助检测
 
-把这一句发给你的 AI，它会读部署文档、问你三个问题、装完并自检：
+![选择自己的 Key、检测题目、模型和思考强度](docs/assets/screenshots/key-check.png)
 
-```
-帮我部署 AI 流口水降智调度：https://raw.githubusercontent.com/noonwake-ai/ai-drool-router/main/docs/install.md
-```
+## Docker 部署
 
-> 不想让它碰服务器？先点 **[在线 Demo](https://noonwake-ai.github.io/ai-drool-router/)** —— 不用装、不用密钥、不花钱。
+准备一个已运行的 Sub2API 实例、一个巡检服务 HTTPS 域名，以及安装了 Docker Compose v2 的主机。巡检容器需要能访问 Sub2API，分组巡检还需要能访问目标账号的上游或代理。
 
----
-
-![两个让你半夜睡不着的问题](docs/assets/diagrams/zh/problem.svg)
-
-![怎么测](docs/assets/diagrams/zh/probes.svg)
-
----
-
-## 它和 Sub2API 怎么咬合
-
-**这不是可选依赖，是深度绑定。** 项目自己不存账号、不存密钥——没有 Sub2API，它连「该问谁」都不知道。
-
-![闭环](docs/assets/diagrams/zh/loop.svg)
-
-| 需要 Sub2API 提供 | 缺了会怎样 |
-|---|---|
-| **管理员 API Key** | 装不起来，这是唯一的凭据入口 |
-| **分组** | 只能全测，可能连生图账号一起测 |
-| **账号 + 上游凭据** | 拿不到真实答案，只能测网关转发的二手结果 |
-| **优先级字段** | 只能看，不能自动调度 |
-
-**为什么必须直连上游**：走分组网关的话，谁回答由当时的路由决定，你测到的是「随机一家」。
-所以它拿账号自己的凭据直连上游——测到的才是这家供应商**真实**的样子。
-
-![评分](docs/assets/diagrams/zh/scoring.svg)
-
-![架构](docs/assets/diagrams/zh/architecture.svg)
-
----
-
-## 快速开始
+### 1. 下载并配置
 
 ```bash
-git clone https://github.com/noonwake-ai/ai-drool-router.git && cd ai-drool-router
-python3 -m pip install -r detector/requirements.txt
-cd web && npm ci && npm run build && cd ..
-
-cp config.example.json config.json             # 填 base_url、平台、模型
-export SUB2API_ADMIN_KEY='你的密钥'
-
-python3 -m detector.monitor --metadata-only    # 只拉账号，0 token
-python3 -m detector.monitor --source initial   # 跑一轮真实检测
-python3 -m detector.server --dist web/dist --public ./data/public
+git clone https://github.com/daQzi/code1024-drool-router.git
+cd code1024-drool-router
+cp config.example.json config.json
+mkdir -p credentials
+(umask 077; openssl rand -hex 32 > credentials/web-token; touch credentials/sub2api-admin)
 ```
 
-只想看看界面（不连网关、不花钱）：
+在 `config.json` 中更新以下字段，保留其余配置。将示例域名换成自己的地址。
+
+```json
+{
+  "base_url": "https://api.example.com",
+  "web": {
+    "session_auth_url": "https://api.example.com",
+    "public_origin": "https://inspect.example.com",
+    "frame_ancestors": ["https://api.example.com"]
+  }
+}
+```
+
+`base_url` 和 `session_auth_url` 从容器访问，可以使用同一实例的内网地址。`public_origin` 填浏览器访问巡检服务的来源，`frame_ancestors` 填浏览器访问 Sub2API 的来源。来源只包含协议、域名和可选端口。
+
+`credentials/web-token` 是容器监听所需的随机口令。定时巡检的管理员 API Key 可在页面配置，或写入 `credentials/sub2api-admin`。先用登录会话验证页面时，该文件可以留空。
+
+### 2. 启动巡检服务
 
 ```bash
-python3 scripts/dev_preview.py
+docker compose build
 ```
 
-## 常用文档
+容器以 `drool` 用户运行。用专用组或 ACL 让该用户能读取 `config.json`、进入 `credentials/` 并读取所用凭据文件。可运行 `docker compose run --rm --no-deps drool id` 查看容器用户的 UID 和 GID。
 
-| 文档 | 讲什么 |
-|---|---|
-| [AI 安装指引](docs/install.md) | 写给 AI 执行的部署流程，含红线与自检 |
-| [部署手册](docs/deploy.md) | Docker / systemd 两条路线，升级与回滚 |
-| [架构说明](docs/architecture.md) | 三个进程、数据流、错误分类 |
-| [参与贡献](CONTRIBUTING.md) | 开发环境与提交规范 |
-| [安全策略](SECURITY.md) | 安全模型与部署方责任 |
+```bash
+docker compose up -d
+curl -fsS http://127.0.0.1:4191/healthz
+```
 
-## 三条必须说清的边界
+默认对宿主机只开放 `127.0.0.1:4191`，使用 HTTPS 反向代理对外提供页面。可直接参考 [Nginx 配置示例](deploy/nginx.conf.example)。巡检配置和历史保存在 Compose 的 `drool-data` 卷，升级前请备份数据卷。
 
-- **默认只算分，不改网关。** `routing.write_priority` 与 `write_callable` 默认 `false`，
-  而且**由配置文件说了算**——命令行和 systemd 单元都绕不过去。
-- **这是定向探针，不是完整评测。** 它只回答一个问题：这家供应商现在还在稳定输出它该有的水平吗。
-- **浏览器永远拿不到密钥。** 页面上只有脱敏后的公开投影。
+### 3. 在 Sub2API 添加入口
 
-## 许可
+1. 以管理员身份进入 Sub2API 的「系统设置 → 站点设置 → 自定义菜单页面」，添加菜单「模型质量巡检」，地址填写 `https://inspect.example.com/?embed=1`。需要开放用户 Key 自测时，将菜单设为用户可见。
+2. 从新菜单进入巡检页面。宿主将登录会话传给嵌入页，服务通过同一 Sub2API 实例的 `/api/v1/auth/me` 校验身份。嵌入地址应指向自己部署的服务，反代配置应避免记录初次访问 URL 的查询参数。
+3. 打开「巡检设置」，点「同步分组」，选择一个分组，配置账号实际支持的模型和题目并保存。按下一节配置好上游账号凭据后，可点「按已保存配置巡检一次」验证。同步只读取元数据，执行巡检会发出真实模型请求。
 
-**[GNU LGPL-3.0](LICENSE)** © NoonWake.AI
+### 4. 启用定时巡检
 
-自用、商用、改造都免费，也不用开源你自己的业务代码；
-但**改了它本身再分发，改动的部分要以 LGPL-3.0 开源**。
-LGPL-3.0 引用了 GPL-3.0，完整原文见 [COPYING](COPYING)。
+分组巡检使用目标账号的凭据直连上游。启用定时巡检还需要管理员机器 Key 读取目标分组和账号。可在「巡检读取凭据」配置机器 Key，也可使用部署时挂载的管理员 Key 文件。
+
+- **网关允许账号导出时**，巡检服务可通过 `/api/v1/admin/accounts/data` 按账号读取凭据。
+- **导出需要二次认证或机器 Key 无导出权限时**，通过管理员正常授权流程取得目标账号凭据，使用受保护的本地凭据文件或定期刷新的快照，并以只读方式挂载。OpenAI OAuth 账号还需要及时更新的令牌和可读取的账号配额策略。可先用一个上游 API Key 类型的账号验证接入。
+
+手动验证通过后，在「巡检设置」启用该分组的定时巡检并保存。
+
+不同 Sub2API 版本的管理权限和账号字段可能有差异。完整功能需目标实例支持账号和分组管理 API、自定义菜单传递的登录会话，以及对应的账号凭据读取方式。自动剔除另需账号 `schedulable` 接口的写权限。详见 [分组巡检、凭据与自动剔除](docs/inspection-v3.md#机器凭据) 和 [本地凭据文件配置](docs/code1024-standalone.md#账号导出有二次认证时)。
+
+## 上游与许可
+
+本项目在 [NoonWake.AI 的 AI Drool Router](https://github.com/noonwake-ai/ai-drool-router) 基础上二次开发，增加了独立巡检控制台、Sub2API 页面嵌入、分组定时巡检与用户 Key 自助检测。保留原项目版权声明 © NoonWake.AI，沿用 **LGPL-3.0-or-later**，许可全文见 [LICENSE](LICENSE) 和 [COPYING](COPYING)。
