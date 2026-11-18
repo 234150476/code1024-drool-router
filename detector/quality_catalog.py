@@ -12,7 +12,7 @@ def defaults():
     candy = {k: deepcopy(ORIGINAL[k]) for k in ('prompt', 'instructions', 'expected')}
     base = dict(enabled=True, description='', rounds=1, instructions='请严格遵循题目要求。', expected='', choices=[], unit='')
     return [
-        {**base, **candy, 'id':'candy', 'title':'糖果双次校验', 'kind':'number', 'rounds':2, 'unit':'个'},
+        {**base, **candy, 'id':'candy', 'title':'糖果测试', 'kind':'number', 'rounds':1, 'unit':'个'},
         {**base, 'id':'drawing', 'title':'鹈鹕骑自行车', 'kind':'drawing',
          'description':'生成作品供人工比较，结构完整不代表画面质量通过。',
          'prompt':'创建一个HTML，内容是SVG绘制一只鹈鹕骑自行车的2D动画',

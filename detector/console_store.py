@@ -91,6 +91,8 @@ class ConsoleStore:
                 # Old isolation evidence is retained for rollback/audit only.
                 # No code in this service reads it or modifies gateway routing.
                 db.execute('INSERT INTO console_documents VALUES (?,?,?)',('inspection_v3',1,'{}'))
+            from .question_migrations import candy_single
+            candy_single(db)
         os.chmod(self.path, 0o600)
 
     @contextmanager

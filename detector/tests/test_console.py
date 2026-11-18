@@ -146,6 +146,46 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.call('/api/admin/settings', {'value': [], 'revision': 1}, ADMIN, 'PUT')[0], 400)
         self.assertEqual(len(Gateway.requests), 0)
 
+    def test_quarantine_administration_is_admin_only_and_key_is_never_echoed(self):
+        for token, expected in [(None, 401), (USER, 403), (ADMIN, 200)]:
+            self.assertEqual(self.call('/api/admin/quarantines', token=token)[0], expected)
+        for path, method, payload in [('/api/admin/quarantine-key', 'PUT', {'key': 'fixture-scheduling-key'}),
+                                      ('/api/admin/quarantines/1/handover', 'POST', {})]:
+            self.assertEqual(self.call(path, payload, USER, method)[0], 403)
+            self.assertEqual(self.call(path, payload, ADMIN, method, origin='https://evil.test')[0], 403)
+        self.assertEqual(self.call('/api/admin/quarantine-key', {'key': 'short'}, ADMIN, 'PUT')[0], 400)
+        with patch('detector.upstream.Sub2API.accounts', return_value=[]):
+            status, data, _ = self.call('/api/admin/quarantine-key', {'key': 'fixture-scheduling-key'}, ADMIN, 'PUT')
+        self.assertEqual(status, 200); self.assertEqual(data, {'configured': True})
+        file = self.service.store.private/'quarantine-key'
+        self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(self.call('/api/admin/inspections', token=ADMIN)[1]['capabilities']['quarantine_key_ready'])
+        self.assertNotIn('fixture-scheduling-key', json.dumps(self.call('/api/admin/quarantines', token=ADMIN)[1]))
+        self.assertEqual(self.call('/api/admin/quarantines/999/handover', {}, ADMIN, 'POST')[0], 404)
+
+    def test_admin_record_details_and_artwork_require_admin_including_preview_grants(self):
+        self.service.store.save_inventory([{**ACCOUNTS[0], 'schedulable': True, 'last_used_at': time.time()}], GROUPS, 'admin')
+        from detector.inspection import save
+        inspection = save(self.service, {'group_id': 3, 'enabled': True, 'model': 'fixture-model', 'effort': 'low',
+            'question_ids': ['drawing'], 'questions': [], 'schedule': {**self.plan['value']['schedule'], 'enabled': False}}, 'admin', self.plan['id'], self.plan['revision'])
+        plan = self.service.store.plan(inspection['id']); job, _ = self.enqueue(plan)
+        snapshot = self.service.store.job(job['id']); question = snapshot['snapshot']['questions'][0]
+        self.service.store.import_quality_results(snapshot, [{'id': 'f'*32, 'account_id': 1, 'group_ids': [3,4],
+            'slot': time.time(), 'duration': 1, 'finished_at': time.time(), 'model': 'fixture-model', 'effort': 'low',
+            'platform': 'openai', 'kind': question['id'], 'question_type': question['kind'], 'title': question['title'],
+            'bank_version': question['version'], 'status': 'pass', 'rounds': [{'round': 1, 'status': 'pass', 'response': '<svg></svg>'}]}])
+        self.service.store.update_job(job['id'], status='completed', finished_at=time.time())
+        row = next(r for r in self.service.store.results() if r['job_id']==job['id'])
+        ident = self.service.store.public_id('record', row['id']); path = '/api/admin/records/'+ident
+        for token, expected in [(None, 401), (USER, 403), (ADMIN, 200)]:
+            self.assertEqual(self.call(path, token=token)[0], expected)
+        data = self.call(path, token=ADMIN)[1]
+        self.assertIn('account_id', data); self.assertIn('preview=', data['render_urls'][0])
+        artifact = data['render_urls'][0]
+        self.assertEqual(self.call(artifact)[0], 200)
+        self.assertEqual(self.call(path+'/artifact')[0], 401)
+        self.assertEqual(self.call(path+'/artifact', token=USER)[0], 403)
+
     def test_self_service_loads_own_keys_models_questions_and_history_over_http(self):
         status, data, headers = self.call('/api/user/keys', token=USER)
         self.assertEqual(status, 200)

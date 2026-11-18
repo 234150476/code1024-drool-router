@@ -19,6 +19,7 @@ from .console_store import ConsoleStore, dumps
 from .console_public import PublicResults
 from .upstream import Sub2API, ProbeError
 from .self_service import SelfService
+from .account_quarantine import AccountQuarantine
 
 
 def quiet_paused(spec, now=None):
@@ -65,6 +66,7 @@ class ConsoleService:
         self.tokens = {}
         self.lock = threading.RLock()
         self.store.recover_jobs()
+        self.quarantine = AccountQuarantine(self)
         self.thread = None
         if start:
             self.thread = threading.Thread(target=self.loop, daemon=True)
@@ -85,7 +87,8 @@ class ConsoleService:
         return {'machine_credential_ready': bool(self.machine_key()), 'session_auth': bool(config.get('web.session_auth_url')),
                 'gateway_configured': bool(config.get('base_url')),
                 'write_priority': False, 'write_callable': False,
-                'admin_entry': '/custom/quality-inspection'}
+                'admin_entry': '/custom/quality-inspection',
+                'quarantine_key_ready': bool(self.quarantine.key())}
 
     def save_automation(self,key,actor):
         if not isinstance(key,str) or not 16<=len(key.strip())<=1000:
@@ -125,7 +128,15 @@ class ConsoleService:
         value=validate_plan(value)
         if isinstance(value.get('schedule'), dict) and value['schedule'].get('enabled') and not self.machine_key():
             raise ConsoleError('尚未配置机器凭据，无法启用定时；可关闭定时后保存')
-        return self.store.save_plan(value, actor, ident, revision)
+        with self.lock:
+            if value.get('quarantine', {}).get('enabled') and not self.quarantine.key():
+                raise ConsoleError('启用自动剔除前，请先配置带 accounts.read、accounts.schedule 权限的专用调度 Key')
+            plan = self.store.save_plan(value, actor, ident, revision)
+            if not value['enabled'] or not value.get('quarantine', {}).get('enabled'):
+                for record in self.quarantine.records.entries():
+                    if record['plan_id'] == plan['id'] and record['state'] == 'rechecking':
+                        self.stop_job(record['recheck_job_id'], actor)
+            return plan
 
     def save_settings(self, value, revision, actor):
         if not isinstance(value, dict):
@@ -220,6 +231,11 @@ class ConsoleService:
             self.wake.clear()
 
     def tick(self):
+        with self.lock:
+            self.quarantine.tick()
+            self.schedule_tick()
+
+    def schedule_tick(self):
         if not self.machine_key():
             return
         for plan in self.store.plans():
@@ -244,6 +260,9 @@ class ConsoleService:
         ident = job['id']
         with self.lock:
             if self.store.job(ident)['status'] != 'queued':
+                return
+            if job['source'] == 'cooldown' and not self.quarantine.authorized(job):
+                self.store.update_job(ident, status='cancelled', finished_at=time.time(), message='自动剔除已停用或账号已转人工，未发起复测')
                 return
             if job['source'] in ('timer', 'cooldown') and quiet_paused(job['snapshot']['plan']['value']['schedule']):
                 self.tokens.pop(ident, None)
@@ -315,6 +334,13 @@ class ConsoleService:
             self.store.update_job(ident, status='failed', finished_at=time.time(), message='执行未完成；未自动重发模型请求')
         finally:
             token = None
+        # Scheduling errors must never turn a completed model test into a failed test.
+        try:
+            with self.lock:
+                self.quarantine.on_complete(self.store.job(ident))
+        except Exception:
+            with self.store.db() as db:
+                self.store.audit(db, 'quarantine', 'quarantine_callback_failed', ident)
 
     def cleanup(self):
         retention = self.store.document('settings')['value']['retention']

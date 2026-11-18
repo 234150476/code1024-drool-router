@@ -449,6 +449,39 @@ class Sub2API:
                 **{key: defaults.get(key) for key in ('default_threshold_5h', 'default_threshold_7d')}}
         return account
 
+    def set_schedulable_only(self, account_id, enabled, expected):
+        """Quality quarantine changes only scheduling, never status or credentials."""
+        if type(account_id) is not int or account_id <= 0 or type(enabled) is not bool:
+            raise ValueError('INVALID_SCHEDULING_CONTROL')
+        before = self.account_state(account_id)
+        def same_identity(value):
+            return (all(value.get(k) == expected.get(k) for k in ('id', 'name', 'type', 'platform')) and
+                    set(value.get('group_ids', [])) == set(expected.get('group_ids', [])))
+        if not same_identity(before) or before.get('status') != 'active' or type(before.get('schedulable')) is not bool:
+            raise ProbeError('QUARANTINE_ACCOUNT_CHANGED', '账号身份或启用状态已变化，未修改调度')
+        if oauth_quota_state(before)['limited']:
+            raise ProbeError(OAUTH_QUOTA_ERROR, '账号存在其他限额限制，保留调度状态')
+        from .account_selection import timestamp
+        now = time.time()
+        if any((timestamp(before.get(k)) or 0) > now for k in ('rate_limit_reset_at', 'overload_until', 'temp_unschedulable_until')) or (timestamp(before.get('expires_at')) or float('inf')) <= now:
+            raise ProbeError('QUARANTINE_ACCOUNT_BLOCKED', '账号存在其他暂停、过期或限流限制，未修改调度')
+        if before['schedulable'] is not enabled:
+            try:
+                with requests.Session() as session:
+                    session.trust_env = False
+                    response = session.post(self.base+'/api/v1/admin/accounts/'+str(account_id)+'/schedulable',
+                        headers=self.admin_headers(), json={'schedulable': enabled}, timeout=(5, 15), allow_redirects=False)
+                    if response.status_code != 200:
+                        raise ProbeError('QUARANTINE_HTTP_'+str(response.status_code), '网关拒绝调度更新，请检查专用 Key 的 accounts.schedule 权限')
+                    if response.json().get('code', 0) != 0:
+                        raise ProbeError('QUARANTINE_REJECTED', '网关拒绝调度更新')
+            except (requests.RequestException, ValueError):
+                raise ProbeError('QUARANTINE_UNCONFIRMED', '调度写入结果未确认，将回读核对') from None
+        after = self.account_state(account_id)
+        if not same_identity(after) or after.get('status') != 'active' or after.get('schedulable') is not enabled:
+            raise ProbeError('QUARANTINE_READBACK_FAILED', '调度写入回读不一致，请管理员检查')
+        return after
+
     def set_callable(self, account_id, enabled):
         if type(account_id) is not int or account_id <= 0 or type(enabled) is not bool:
             raise ValueError('INVALID_SCHEDULING_CONTROL')

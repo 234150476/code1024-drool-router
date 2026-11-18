@@ -127,7 +127,7 @@ def validate_settings(value):
 def validate_plan(value):
     required = {'name', 'enabled', 'scope', 'models', 'kinds', 'schedule', 'published', 'public_name',
                 'show_accounts', 'show_answers', 'show_artifacts', 'write_priority', 'write_callable'}
-    if not isinstance(value, dict) or set(value)-{'isolation', 'selection', 'questions'} != required:
+    if not isinstance(value, dict) or set(value)-{'isolation', 'selection', 'questions', 'quarantine'} != required:
         raise ConsoleError('检测计划包含未知字段或缺少字段')
     out = deepcopy(value)
     out['name'] = text(out['name'], '计划名称', 80)
@@ -157,6 +157,19 @@ def validate_plan(value):
         if not isinstance(selection, dict) or set(selection) != {'mode', 'count'} or selection['mode'] not in ('all', 'recent_active'):
             raise ConsoleError('账号抽样配置无效')
         integer(selection['count'], '每轮抽样账号数', 1, 50)
+    if 'quarantine' in out:
+        policy = out['quarantine']
+        if not isinstance(policy, dict) or set(policy)-{'hide_failed_results'} != {'enabled', 'cooldown_minutes'}:
+            raise ConsoleError('自动剔除配置字段不完整')
+        policy.setdefault('hide_failed_results', True)
+        boolean(policy['hide_failed_results'], '隐藏失败结果开关')
+        boolean(policy['enabled'], '自动剔除开关')
+        integer(policy['cooldown_minutes'], '冷却分钟数', 5, 10080)
+        if policy['enabled']:
+            if out['scope']['mode'] != 'groups' or len(out['scope']['group_ids']) != 1:
+                raise ConsoleError('自动剔除仅支持单分组巡检')
+            if not any(q['enabled'] and q['kind'] in ('number', 'choice', 'json') for q in out.get('questions', [])):
+                raise ConsoleError('自动剔除需要配置有标准答案的数值、选择或 JSON 题；鹈鹕和指纹题不适用')
     # Cross-plan evidence is not yet a routing policy. Never silently ignore an enabled write.
     if out['write_priority'] or out['write_callable']:
         raise ConsoleError('旧版回写开关已停用，请使用质量隔离策略')

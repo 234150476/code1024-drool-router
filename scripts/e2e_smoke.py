@@ -33,6 +33,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -391,8 +393,10 @@ def run_round(data_dir, config_path, gateway, ca_bundle, writes_on, label):
 
     before = len(gateway.writes)
     log('  running one full round (%s)...' % label)
-    code = collect(str(data_dir), str(key_file), gateway.url, source='initial',
-                   quality_routing=True, priority_routing=True)
+    # The simulated round must not depend on how close the wall clock is to a slot.
+    with patch('detector.monitor.next_slot', side_effect=lambda now=None: (time.time() if now is None else now)+3600):
+        code = collect(str(data_dir), str(key_file), gateway.url, source='initial',
+                       quality_routing=True, priority_routing=True)
     if code != 0:
         raise SystemExit('collect() exited %d during %s' % (code, label))
     return store, before, len(gateway.writes)

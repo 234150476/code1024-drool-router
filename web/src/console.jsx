@@ -5,6 +5,8 @@ import {request,loadSelfData} from './console-client.js';
 import {ThemeSwitch} from './workspace.jsx';
 import ResultViewer,{ResultBody} from './result-viewer.jsx';
 import ResultAccess from './result-access.jsx';
+import QuarantineAdmin,{QuarantinePolicy} from './quarantine-settings.jsx';
+import {defaultQuarantine,policyForQuestions} from './quarantine-policy.js';
 import {clock,verdict} from './inspection-view.js';
 import './inspection.css';
 
@@ -35,13 +37,46 @@ function AdminSettings({onChange}){
   async function load(id){const value=await request('/api/admin/inspections');setData(value);setSelected(old=>id??(old||value.inspections[0]?.id||''));return value;}
   useEffect(()=>{load().catch(e=>setError(e.message));},[]);
   const record=data?.inspections.find(p=>p.id===selected);
-  useEffect(()=>{if(!data)return;const question=clone(record?.questions[0]||data.questions.value.find(q=>q.id==='drawing')||data.questions.value[0]);setDraft({group_id:record?.group_id||data.groups[0]?.id||0,enabled:record?.enabled??true,model:record?.model||'gpt-6.1-sol',effort:record?.effort||'high',question_ids:[question.id],questions:[question],schedule:{...daytime,...record?.schedule,quiet_pause:true}});},[selected,record?.revision,Boolean(data)]);
+  useEffect(()=>{
+    if(!data)return;
+    const questions=clone(record?.questions.length?record.questions:[data.questions.value.find(q=>q.id==='drawing')||data.questions.value[0]]);
+    setDraft({group_id:record?.group_id||data.groups[0]?.id||0,enabled:record?.enabled??true,model:record?.model||'gpt-6.1-sol',effort:record?.effort||'low',question_ids:questions.map(q=>q.id),questions,quarantine:{...defaultQuarantine,...record?.quarantine},schedule:{...daytime,...record?.schedule,quiet_pause:true}});
+  },[selected,record?.revision,Boolean(data)]);
   async function act(fn,success){setBusy(true);setError('');setMessage('');try{await fn();if(success)setMessage(success);await onChange();}catch(e){setError(e.message);}finally{setBusy(false);}}
-  const q=draft?.questions[0];
   const set=(field,value)=>setDraft(old=>({...old,[field]:value}));
-  const question=(field,value)=>set('questions',[{...q,[field]:value}]);
-  async function save(){await act(async()=>{const value=clone(draft);if(q.kind==='json'&&typeof value.questions[0].expected==='string')value.questions[0].expected=JSON.parse(value.questions[0].expected);const response=await request('/api/admin/inspections'+(record?'/'+record.id:''),record?'PUT':'POST',{value,...(record?{revision:record.revision}:{})});await load(response.id);},'分组巡检已保存。');}
-  return <section className="ir-panel ir-settings"><div className="ir-section-head"><div><h2>定时巡检设置</h2><p>每个分组一份配置。每轮仅检测最近使用的一个可调度账号。</p></div></div>{error&&<p className="ir-error" role="alert">{error}</p>}{message&&<p className="ir-message" role="status">{message}</p>}{!data||!draft?<div className="ir-empty">正在加载配置…</div>:<fieldset disabled={busy}><div className="ir-actions"><select aria-label="选择分组配置" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">新增分组巡检</option>{data.inspections.map(p=><option key={p.id} value={p.id}>{data.groups.find(g=>g.id===p.group_id)?.name||p.group_id}</option>)}</select><button onClick={()=>act(async()=>{await request('/api/admin/inventory/sync','POST',{});await load();},'分组已同步。')}><RefreshCw size={15}/>同步分组</button></div><div className="ir-form-grid"><Field label="检测分组"><select value={draft.group_id} onChange={e=>set('group_id',Number(e.target.value))}>{data.groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></Field><Field label="检测模型"><input value={draft.model} onChange={e=>set('model',e.target.value)}/></Field><Field label="思考强度"><Effort value={draft.effort} onChange={v=>set('effort',v)}/></Field><Field label="检测题目"><select value={q.id} onChange={e=>{const next=clone(data.questions.value.find(item=>item.id===e.target.value));setDraft(old=>({...old,question_ids:[next.id],questions:[next]}));}}>{data.questions.value.filter(item=>item.enabled).map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></Field></div><Field label="题目内容（仅影响此分组的新检测）"><textarea rows="4" value={q.prompt} onChange={e=>question('prompt',e.target.value)}/></Field>{['number','choice','json'].includes(q.kind)&&<Field label="标准答案"><textarea rows="2" value={typeof q.expected==='object'?JSON.stringify(q.expected):q.expected} onChange={e=>question('expected',e.target.value)}/></Field>}<div className="ir-form-grid"><Field label="白天间隔（分钟）"><input type="number" min="5" max="1440" value={draft.schedule.regular_minutes} onChange={e=>set('schedule',{...draft.schedule,regular_minutes:Number(e.target.value)})}/></Field><Field label="暂停时段开始（北京时间）"><input type="time" value={draft.schedule.quiet_start} onChange={e=>set('schedule',{...draft.schedule,quiet_start:e.target.value})}/></Field><Field label="恢复检测（北京时间）"><input type="time" value={draft.schedule.quiet_end} onChange={e=>set('schedule',{...draft.schedule,quiet_end:e.target.value})}/></Field></div><label className="ir-check"><input type="checkbox" checked={draft.enabled&&draft.schedule.enabled} onChange={e=>setDraft(old=>({...old,enabled:e.target.checked,schedule:{...old.schedule,enabled:e.target.checked}}))}/>启用此分组的定时巡检</label><p className="ir-note">结果公开到分组。鹈鹕作品只作人工观察，其他题目按标准答案判断；检测不修改账号调度状态。未找到有使用记录的可调度账号时，本轮跳过。</p><div className="ir-actions"><button className="ir-primary" onClick={save}>保存巡检配置</button>{record&&<button onClick={()=>act(async()=>{await request('/api/admin/inspections/'+record.id+'/run','POST',{request_key:crypto.randomUUID()});await load();},'已提交一次巡检，请稍后刷新结果。')}>按已保存配置巡检一次</button>}</div><details className="ir-credentials"><summary>服务凭据 · {data.capabilities.machine_credential_ready?'已配置':'待配置'}</summary><p>定时巡检使用专用管理员机器 Key 读取授权分组。账号凭据通过受保护的服务器文件提供，Key 检测使用用户自己的 Key。</p><Field label="网关管理员 API Key"><input type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder="验证成功后保存，不回显原文"/></Field><button disabled={!key} onClick={()=>act(async()=>{await request('/api/admin/automation','PUT',{key});setKey('');await load();},'服务凭据已验证并保存。')}>验证并保存</button></details>{data.jobs.some(job=>['running','queued','failed','completed_with_errors'].includes(job.status))&&<details><summary>最近任务状态</summary>{data.jobs.slice(0,10).map(job=><p key={job.id}>{clock(job.created_at)} · {verdict(job)} · {job.message||job.name}</p>)}</details>}</fieldset>}</section>;
+  const editQuestion=(id,field,value)=>setDraft(old=>({...old,questions:old.questions.map(q=>q.id===id?{...q,[field]:value}:q)}));
+  function toggleQuestion(id,checked){
+    const questions=checked?[...draft.questions,clone(data.questions.value.find(q=>q.id===id))]:draft.questions.filter(q=>q.id!==id);
+    setDraft(old=>({...old,questions,question_ids:questions.map(q=>q.id),quarantine:policyForQuestions(old.quarantine,questions)}));
+  }
+  async function save(){await act(async()=>{
+    const value=clone(draft);
+    value.questions=value.questions.map(q=>q.kind==='json'&&typeof q.expected==='string'?{...q,expected:JSON.parse(q.expected)}:q);
+    const response=await request('/api/admin/inspections'+(record?'/'+record.id:''),record?'PUT':'POST',{value,...(record?{revision:record.revision}:{})});
+    await load(response.id);
+  },'分组巡检已保存。');}
+  return <><section className="ir-panel ir-settings"><div className="ir-section-head"><div><h2>定时巡检设置</h2><p>每个分组一份配置，每轮选取最近使用的一个可调度账号，依次执行所选题目。</p></div></div>
+    {error&&<p className="ir-error" role="alert">{error}</p>}{message&&<p className="ir-message" role="status">{message}</p>}
+    {!data||!draft?<div className="ir-empty">正在加载配置…</div>:<fieldset disabled={busy}>
+      <div className="ir-actions"><select aria-label="选择分组配置" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">新增分组巡检</option>{data.inspections.map(p=><option key={p.id} value={p.id}>{data.groups.find(g=>g.id===p.group_id)?.name||p.group_id}</option>)}</select><button onClick={()=>act(async()=>{await request('/api/admin/inventory/sync','POST',{});await load();},'分组已同步。')}><RefreshCw size={15}/>同步分组</button></div>
+      <div className="ir-form-grid"><Field label="检测分组"><select value={draft.group_id} onChange={e=>set('group_id',Number(e.target.value))}>{data.groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></Field><Field label="检测模型"><input value={draft.model} onChange={e=>set('model',e.target.value)}/></Field><Field label="思考强度"><Effort value={draft.effort} onChange={v=>set('effort',v)}/></Field></div>
+      <div className="ir-own-result"><h3>检测题目（可多选）</h3><p className="ir-note">同一账号依次检测所有选中题目。每题可单独配置内容、标准答案和请求次数；糖果测试默认只请求一次。</p>
+        <div className="ir-actions">{data.questions.value.filter(q=>q.enabled).map(q=><label className="ir-check" key={q.id}><input type="checkbox" checked={draft.question_ids.includes(q.id)} disabled={draft.question_ids.length===1&&draft.question_ids[0]===q.id} onChange={e=>toggleQuestion(q.id,e.target.checked)}/>{q.title}</label>)}</div>
+        {draft.questions.map(q=><details key={q.id} open><summary>{q.title} · {q.rounds} 次请求</summary>
+          <Field label="题目内容（仅影响此分组的新检测）"><textarea rows="4" value={q.prompt} onChange={e=>editQuestion(q.id,'prompt',e.target.value)}/></Field>
+          {['number','choice','json'].includes(q.kind)&&<Field label="标准答案"><textarea rows="2" value={typeof q.expected==='object'?JSON.stringify(q.expected):q.expected} onChange={e=>editQuestion(q.id,'expected',e.target.value)}/></Field>}
+          <Field label="此题每轮请求次数"><select value={q.rounds} onChange={e=>editQuestion(q.id,'rounds',Number(e.target.value))}>{[1,2,3].map(n=><option key={n} value={n}>{n} 次</option>)}</select></Field>
+        </details>)}
+      </div>
+      <div className="ir-form-grid"><Field label="白天间隔（分钟）"><input type="number" min="5" max="1440" value={draft.schedule.regular_minutes} onChange={e=>set('schedule',{...draft.schedule,regular_minutes:Number(e.target.value)})}/></Field><Field label="暂停时段开始（北京时间）"><input type="time" value={draft.schedule.quiet_start} onChange={e=>set('schedule',{...draft.schedule,quiet_start:e.target.value})}/></Field><Field label="恢复检测（北京时间）"><input type="time" value={draft.schedule.quiet_end} onChange={e=>set('schedule',{...draft.schedule,quiet_end:e.target.value})}/></Field></div>
+      <label className="ir-check"><input type="checkbox" checked={draft.enabled&&draft.schedule.enabled} onChange={e=>setDraft(old=>({...old,enabled:e.target.checked,schedule:{...old.schedule,enabled:e.target.checked}}))}/>启用此分组的定时巡检</label>
+      <QuarantinePolicy value={draft.quarantine} questions={draft.questions} keyReady={data.capabilities.quarantine_key_ready} onChange={value=>set('quarantine',value)}/>
+      <p className="ir-note">结果展示到分组。鹈鹕作品只作人工观察，其他题目按标准答案判断；未开启自动剔除时只检测和展示。未找到有使用记录的可调度账号时，本轮跳过。</p>
+      <div className="ir-actions"><button className="ir-primary" disabled={!draft.questions.length} onClick={save}>保存巡检配置</button>{record&&<button onClick={()=>act(async()=>{await request('/api/admin/inspections/'+record.id+'/run','POST',{request_key:crypto.randomUUID()});await load();},'已提交一次巡检，请稍后刷新结果。')}>按已保存配置巡检一次</button>}</div>
+      <details className="ir-credentials"><summary>巡检读取凭据 · {data.capabilities.machine_credential_ready?'已配置':'待配置'}</summary><p>定时巡检使用专用管理员机器 Key 读取授权分组。账号凭据通过受保护的服务器文件提供，Key 检测使用用户自己的 Key。</p><Field label="网关管理员 API Key"><input type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder="验证成功后保存，不回显原文"/></Field><button disabled={!key} onClick={()=>act(async()=>{await request('/api/admin/automation','PUT',{key});setKey('');await load();},'服务凭据已验证并保存。')}>验证并保存</button></details>
+      {data.jobs.some(job=>['running','queued','failed','completed_with_errors'].includes(job.status))&&<details><summary>最近任务状态</summary>{data.jobs.slice(0,10).map(job=><p key={job.id}>{clock(job.created_at)} · {verdict(job)} · {job.message||job.name}</p>)}</details>}
+    </fieldset>}
+  </section><QuarantineAdmin onCredentialChange={()=>load()}/></>;
 }
 
 export default function ConsoleApp(){

@@ -30,6 +30,28 @@ class PublicResults:
     def __init__(self, store):
         self.store = store
 
+    def result_rows(self, include_hidden=False):
+        rows = self.store.results()
+        if include_hidden:
+            return rows
+        from .account_quarantine import conclusion
+        plans = {p['id']: p['value'] for p in self.store.plans()}
+        batches = {}
+        for row in rows:
+            batches.setdefault((row['job_id'], row['account_id']), []).append(row)
+        hidden = set()
+        for key, batch in batches.items():
+            policy = plans.get(batch[0]['plan_id'], {}).get('quarantine', {})
+            if not policy.get('hide_failed_results', True):
+                continue
+            job = self.store.job(key[0])
+            if (job['source'] not in ('manual', 'timer', 'cooldown') or
+                    not job['snapshot']['plan']['value'].get('quarantine', {}).get('enabled')):
+                continue
+            if conclusion(job['snapshot'].get('questions', []), [r['value'] for r in batch]) == 'fail':
+                hidden.add(key)
+        return [row for row in rows if (row['job_id'], row['account_id']) not in hidden]
+
     def projection(self, hours=None):
         value = self._projection(hours)
         value['groups'] = [{key: group[key] for key in ('id', 'name', 'method', 'profiles')}
@@ -62,7 +84,7 @@ class PublicResults:
                         for gid in a['group_ids']:
                             if gid in raw_groups: ensure('g'+str(gid),names['group_names'].get(str(gid)) or raw_groups[gid]['name'])
 
-        for row in store.results():
+        for row in self.result_rows():
             if hours is not None and row['slot'] < time.time() - hours * 3600:
                 continue
             plan = plans.get(row['plan_id'])
@@ -139,7 +161,8 @@ class PublicResults:
         if group_id not in groups: raise ConsoleError('分组不存在或未公开',404)
         rows=[];store=self.store
         plans={p['id']:p['value'] for p in store.plans() if p['value']['published']}
-        for row in store.results():
+        visible = {(r['job_id'], r['account_id']) for r in self.result_rows()} if include_accounts else None
+        for row in self.result_rows(include_hidden=include_accounts):
             plan=plans.get(row['plan_id'])
             if not plan: continue
             s=plan['scope']
@@ -151,6 +174,7 @@ class PublicResults:
             value.update(id=store.public_id('record',row['id']),source='admin',batch_id=store.public_id('batch',row['job_id']),
                 content_available=bool(plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))
             if include_accounts:
+                value['hidden_from_results'] = (row['job_id'], row['account_id']) not in visible
                 targets = store.job(row['job_id'])['snapshot']['targets']
                 value['account_id'] = row['account_id']
                 value['account_name'] = next((a['name'] for a in targets if a['id']==row['account_id']), '')
@@ -166,8 +190,8 @@ class PublicResults:
                 rows.append(value)
         return sorted(rows,key=lambda r:r['slot'],reverse=True)[:300]
 
-    def record(self, ident):
-        allowed=next((r for g in self.projection()['groups'] for r in self.history(g['id']) if r['id']==ident),None)
+    def record(self, ident, include_hidden=False):
+        allowed=next((r for g in self.projection()['groups'] for r in self.history(g['id'], include_accounts=include_hidden) if r['id']==ident),None)
         if not allowed: raise ConsoleError('结果不存在或已撤回',404)
         value={**allowed,'rounds':[], 'prompt': '', 'expected': None}
         if not allowed['content_available']: return value

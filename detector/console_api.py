@@ -41,6 +41,9 @@ def dispatch(handler, path):
             body = read_body(handler, 131072) if handler.command not in ('GET', 'HEAD') else None
             user(handler, service, path, body, token, actor)
             return True
+        if not token and re.fullmatch(r'/api/admin/records/[a-f0-9]{24}/artifact', path):
+            grant = parse_qs(urlsplit(handler.path).query).get('preview', [''])[0]
+            token = handler.server.preview_sessions.token(grant, path)
         identity = admin_identity(handler.server.session_auth_url, token,
                                   handler.headers.get('User-Agent', ''), handler.headers.get('X-Real-IP', ''))
         if not identity:
@@ -234,6 +237,21 @@ def admin(h, s, path, body, token, actor):
             return h.send_json({'role': 'admin', 'id': actor})
         if path == '/api/admin/access':
             return h.send_json(store.document('access'))
+        if path == '/api/admin/quarantines':
+            return h.send_json(s.quarantine.admin_status())
+        if match := re.fullmatch(r'/api/admin/records/([a-f0-9]{24})(/artifact)?', path):
+            value = s.public.record(match[1], include_hidden=True)
+            if match[2]:
+                if value.get('question_type') != 'drawing':
+                    raise ConsoleError('这条结果不是绘图作品', 404)
+                index = round_index(h)
+                if index >= len(value['rounds']) or not value['rounds'][index].get('response'):
+                    raise ConsoleError('作品不存在', 404)
+                return render(h, value['rounds'][index]['response'])
+            if value.get('question_type') == 'drawing':
+                value['render_urls'] = [preview_url(h, path+'/artifact?round='+str(index), token)
+                                        for index, _ in enumerate(value['rounds'])]
+            return h.send_json(value)
         if path == '/api/admin/bootstrap':
             return h.send_json({'settings': store.document('settings'), 'inventory': store.inventory(),
                                 'plans': store.plans(), 'jobs': [s.job_summary(j) for j in store.jobs()],
@@ -269,6 +287,14 @@ def admin(h, s, path, body, token, actor):
     if path=='/api/admin/automation' and method=='PUT':
         fields(body,['key'])
         return h.send_json(s.save_automation(body['key'],actor))
+    if path == '/api/admin/quarantine-key' and method == 'PUT':
+        fields(body, ['key'])
+        with s.lock:
+            return h.send_json(s.quarantine.save_key(body['key'], actor))
+    if match := re.fullmatch(r'/api/admin/quarantines/([1-9][0-9]{0,18})/handover', path):
+        if method == 'POST':
+            fields(body, [])
+            return h.send_json(s.quarantine.handover(int(match[1]), actor))
     if path=='/api/admin/questions' and method=='PUT':
         fields(body,['value','revision'])
         return h.send_json(store.save_document('questions',body['value'],body['revision'],actor))
