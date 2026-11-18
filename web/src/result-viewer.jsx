@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {Code2,Copy,Pause,Play} from 'lucide-react';
 import {request} from './console-client.js';
 import {endpoint} from './endpoints.js';
@@ -26,15 +26,41 @@ export function ResultBody({record,detail,loading=false,renderUrls=null}) {
 
 export default function ResultViewer({group,stamp,admin=false}) {
   const [rows,setRows]=useState([]),[batchId,setBatchId]=useState(''),[model,setModel]=useState(''),[topic,setTopic]=useState(''),[source,setSource]=useState(''),[recordId,setRecordId]=useState(''),[detail,setDetail]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(true);
+  const detailPane=useRef(null);
   useEffect(()=>{setRows([]);setBatchId('');setDetail(null);setError('');setLoading(true);},[group.id,admin]);
   useEffect(()=>{let alive=true;request(`/api/${admin?'admin':'public'}/groups/${group.id}/history`,'GET',undefined,admin).then(value=>{if(alive){setRows(value.runs);setError('');setLoading(false);}}).catch(e=>{if(alive){setError(e.message);setLoading(false);}});return()=>{alive=false;};},[group.id,stamp,admin]);
   const rounds=batches(rows,topic,source),batch=rounds.find(row=>row.id===batchId)||rounds[0];
   const models=[...new Set(batch?.rows.map(row=>row.model)||[])],activeModel=models.includes(model)?model:models[0];
   const current=selectedRecord(batch,activeModel,'',recordId),samples=batch?.rows.filter(row=>row.model===activeModel)||[];
+  useLayoutEffect(()=>{
+    if(detailPane.current)detailPane.current.scrollTop=0;
+  },[current?.id]);
   useEffect(()=>{let alive=true;async function load(){if(!current)return;try{const value=await request(`/api/${admin?'admin':'public'}/records/${current.id}`);if(alive){setDetail(value);setError('');}}catch(e){if(alive){setDetail(null);setError(e.message);}}}setDetail(null);load();const timer=setInterval(load,300000);return()=>{alive=false;clearInterval(timer);};},[current?.id,admin]);
   const topics=[...new Map(rows.map(row=>[row.kind,row.title||row.kind])).entries()];
   return <section className="ir-viewer"><header className="ir-viewer-head"><div><h2>降智检测 · {group.name}</h2><p>每轮独立会话 · 作品供人工判断 · 账号只对管理员展示</p></div><div className="ir-filters"><select aria-label="题目筛选" value={topic} onChange={e=>setTopic(e.target.value)}><option value="">全部题目</option>{topics.map(([id,title])=><option key={id} value={id}>{title}</option>)}</select><select aria-label="来源筛选" value={source} onChange={e=>setSource(e.target.value)}><option value="">全部来源</option><option value="admin">定时巡检</option><option value="user">用户 Key 检测</option></select></div></header>
     {error&&<p className="ir-error" role="alert">{error}</p>}
-    {loading?<div className="ir-empty">正在加载检测记录…</div>:!rounds.length?<div className="ir-empty">{rows.length?'此筛选下没有记录。':'还没有检测结果，完成巡检后会在这里展示。'}</div>:<div className="ir-reader"><aside className="ir-timeline" aria-label="检测记录"><div className="ir-timeline-head"><strong>检测记录</strong><span>北京时间</span></div>{rounds.map((item,index)=><button key={item.id} aria-pressed={batch.id===item.id} className={'ir-round '+(batch.id===item.id?'active':'')} onClick={()=>{setBatchId(item.id);setRecordId('');}}><div><time>{clock(item.slot)}</time><small>{index===0?'最新一轮':sourceName(item.source)}</small></div>{item.rows.map(row=><div className="ir-round-line" key={row.id}><span className={'ir-dot '+row.status}/><span>{row.model}</span><b>{verdict(row)}</b><small>{row.duration??'—'}s</small></div>)}</button>)}</aside><article className="ir-result"><div className="ir-result-head"><div className="ir-models" aria-label="检测模型">{models.map(value=><button key={value} aria-pressed={activeModel===value} className={activeModel===value?'active':''} onClick={()=>{setModel(value);setRecordId('');}}>{value}</button>)}</div><span>开始 {clock(current?.slot,true)}{current?.finished_at&&' · 结束 '+clock(current.finished_at,true)}</span></div>{samples.length>1&&<select aria-label="选择检测结果" value={current?.id||''} onChange={e=>setRecordId(e.target.value)}>{samples.map((row,index)=><option key={row.id} value={row.id}>{row.title} · 样本 {index+1}</option>)}</select>}{current&&<><div className="ir-origin"><span>{sourceName(current.source)} · {current.title}</span>{admin&&current.account_id&&<strong>检测账号 #{current.account_id} {current.account_name}</strong>}</div>{current.hidden_from_results&&<p className="ir-note">该账号本轮有明确答错，仅管理员可见，结果页已隐藏。</p>}<ResultBody record={current} detail={detail} loading={!detail&&!error} renderUrls={detail?.render_urls||[]}/></>}</article></div>}
+    {loading?<div className="ir-empty">正在加载检测记录…</div>:!rounds.length?<div className="ir-empty">{rows.length?'此筛选下没有记录。':'还没有检测结果，完成巡检后会在这里展示。'}</div>:<div className="ir-reader">
+      <aside className="ir-timeline" aria-label="检测记录">
+        <div className="ir-timeline-head"><strong>检测记录</strong><span>北京时间</span></div>
+        <div className="ir-timeline-list" role="region" aria-label="检测记录列表" tabIndex={0}>
+          {rounds.map((item,index)=><button key={item.id} aria-pressed={batch.id===item.id} className={'ir-round '+(batch.id===item.id?'active':'')} onClick={()=>{setBatchId(item.id);setRecordId('');}}>
+            <div><time>{clock(item.slot)}</time><small>{index===0?'最新一轮':sourceName(item.source)}</small></div>
+            {item.rows.map(row=><div className="ir-round-line" key={row.id}><span className={'ir-dot '+row.status}/><span>{row.model}</span><b>{verdict(row)}</b><small>{row.duration??'—'}s</small></div>)}
+          </button>)}
+        </div>
+      </aside>
+      <article className="ir-result" ref={detailPane} aria-label="检测详情" tabIndex={0}>
+        <div className="ir-result-head">
+          <div className="ir-models" aria-label="检测模型">{models.map(value=><button key={value} aria-pressed={activeModel===value} className={activeModel===value?'active':''} onClick={()=>{setModel(value);setRecordId('');}}>{value}</button>)}</div>
+          <span>开始 {clock(current?.slot,true)}{current?.finished_at&&' · 结束 '+clock(current.finished_at,true)}</span>
+        </div>
+        {samples.length>1&&<select aria-label="选择检测结果" value={current?.id||''} onChange={e=>setRecordId(e.target.value)}>{samples.map((row,index)=><option key={row.id} value={row.id}>{row.title} · 样本 {index+1}</option>)}</select>}
+        {current&&<>
+          <div className="ir-origin"><span>{sourceName(current.source)} · {current.title}</span>{admin&&current.account_id&&<strong>检测账号 #{current.account_id} {current.account_name}</strong>}</div>
+          {current.hidden_from_results&&<p className="ir-note">该账号本轮有明确答错，仅管理员可见，结果页已隐藏。</p>}
+          <ResultBody record={current} detail={detail} loading={!detail&&!error} renderUrls={detail?.render_urls||[]}/>
+        </>}
+      </article>
+    </div>}
   </section>;
 }
