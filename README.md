@@ -14,7 +14,7 @@
 
 ### 分组巡检结果
 
-![分组巡检的历史记录和 SVG 作品预览](docs/assets/screenshots/group-results.png)
+![分组巡检的历史记录和 SVG 作品预览](https://cdn3.ldstatic.com/original/4X/f/4/6/f466db09f1a14e0defb267c274b88be126e3f5be.jpeg)
 
 ### 巡检设置
 
