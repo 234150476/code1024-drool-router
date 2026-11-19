@@ -8,6 +8,7 @@ new platform needs config, not a code change.
 """
 import json
 import unittest
+import uuid
 from unittest.mock import Mock, patch
 
 from detector import config
@@ -53,6 +54,38 @@ class ProtocolResolutionTests(unittest.TestCase):
 
 
 class GenericAdapterTests(unittest.TestCase):
+    def test_openai_apikey_responses_matches_gateway_account_test_client_profile(self):
+        with patch.dict(config.CONFIG, {'upstream': {'codex_version': '0.169.1'}}):
+            url, headers, payload = build_request(
+                account('openai', base_url='https://coding-relay.test'), 'drawing',
+                prompt='inspection question', instructions='inspection contract')
+        self.assertEqual(url, 'https://coding-relay.test/v1/responses')
+        self.assertEqual(headers['Authorization'], 'Bearer offline-key')
+        self.assertEqual(headers['Originator'], 'codex_cli_rs')
+        self.assertEqual(headers['Version'], '0.169.1')
+        self.assertTrue(headers['User-Agent'].startswith('codex_cli_rs/0.169.1 '))
+        self.assertEqual(headers['OpenAI-Beta'], 'responses=experimental')
+        self.assertEqual(str(uuid.UUID(headers['X-Codex-Window-ID'])), headers['X-Codex-Window-ID'])
+        self.assertEqual(payload['input'][0]['content'][0]['text'], 'inspection question')
+        self.assertIn('inspection contract', payload['instructions'])
+
+    def test_openai_apikey_probes_have_independent_window_and_request_ids(self):
+        _, first, _ = build_request(account('openai'), 'drawing')
+        _, second, _ = build_request(account('openai'), 'drawing')
+        self.assertNotEqual(first['X-Codex-Window-ID'], second['X-Codex-Window-ID'])
+        self.assertNotEqual(first['X-Client-Request-Id'], second['X-Client-Request-Id'])
+        self.assertEqual(first['Cache-Control'], 'no-cache, no-store')
+
+    def test_other_responses_platforms_keep_their_existing_client_profile(self):
+        with with_platform('moonshot', {**MOONSHOT, 'protocol': 'openai_responses'}):
+            url, headers, payload = build_request(
+                account(base_url='https://relay.test/v1'), 'candy')
+        self.assertEqual(url, 'https://relay.test/v1/responses')
+        self.assertEqual(payload['model'], 'kimi-k3')
+        self.assertNotIn('Originator', headers)
+        self.assertNotIn('Version', headers)
+        self.assertNotIn('X-Codex-Window-ID', headers)
+
     def test_oauth_identity_uses_configured_client_version_and_matching_originator(self):
         a = {**account('openai'), 'type': 'oauth', 'credentials': {'access_token': 'fixture-token',
              'chatgpt_account_id': 'fixture-workspace'}}
@@ -135,10 +168,12 @@ class GenericAdapterTests(unittest.TestCase):
         self.assertEqual(client_info('gemini')['protocol'], 'gemini-generateContent-v1beta')
 
     def test_an_account_flag_downgrades_openai_to_chat_completions(self):
-        _, _, payload = build_request(
+        _, headers, payload = build_request(
             {**account('openai'), 'extra': {'openai_responses_supported': False}}, 'candy')
         self.assertIn('messages', payload)
         self.assertNotIn('input', payload)
+        self.assertNotIn('Originator', headers)
+        self.assertNotIn('X-Codex-Window-ID', headers)
 
 
 class ScopeAppliesToGenericPlatformsTests(unittest.TestCase):

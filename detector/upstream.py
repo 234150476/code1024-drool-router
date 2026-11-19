@@ -723,6 +723,15 @@ def _openai_responses_request(account, model, effort, prompt, instructions, cred
     _auth_type, token = _bearer_or_key(account, creds)
     headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream',
                'Authorization': 'Bearer ' + token}
+    if account.get('platform') == 'openai':
+        # Match Sub2API's applyOpenAICodexProbeHeaders for API-key account tests.
+        # Some coding relays reject the requests library's default client profile.
+        # This remains the HTTP adapter, rather than an installed Codex process.
+        version = codex_version()
+        headers.update({'User-Agent': f'codex_cli_rs/{version} (Ubuntu 22.4.0; x86_64) xterm-256color',
+                        'Originator': 'codex_cli_rs', 'Version': version,
+                        'OpenAI-Beta': 'responses=experimental',
+                        'X-Codex-Window-ID': str(uuid.uuid4())})
     url = endpoint(creds.get('base_url') or 'https://api.openai.com', 'responses')
     payload = {'model': model, 'stream': True, 'store': False, 'instructions': instructions,
                'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': prompt}]}],
