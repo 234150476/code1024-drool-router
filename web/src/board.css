@@ -45,6 +45,7 @@
 .ib-cell.latest{box-shadow:0 0 0 1px var(--ir-bg),0 0 0 2px var(--ir-muted)}
 .ib-axis{display:flex;justify-content:space-between;margin-left:166px;font-size:11px;color:var(--ir-muted)}
 .ib-none{font-size:13px;padding:8px 0}
+.ib-recheck{font-size:12px!important;margin-top:8px!important;padding-top:8px;border-top:1px dashed var(--ir-line)}
 .ib-foot{font-size:12px!important}
 .ib-dialog{width:min(1100px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:20px 24px;border:1px solid var(--ir-line);border-radius:12px;background:var(--ir-bg);color:var(--ir-text)}
 .ib-dialog::backdrop{background:#0f172a99}

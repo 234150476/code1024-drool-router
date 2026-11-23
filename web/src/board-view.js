@@ -17,7 +17,11 @@ export function groupBoard(rows,{hours=24,now=Date.now()/1000}={}){
   const since=now-hours*3600;
   // Admins also receive rows hidden by quarantine (e.g. rechecks of a paused
   // account); the board shows what users see, 全部记录 keeps the full view.
-  const own=rows.filter(row=>row.source!=='user'&&!row.hidden_from_results&&row.slot>=since);
+  const recent=rows.filter(row=>row.source!=='user'&&!row.hidden_from_results&&row.slot>=since);
+  // Cooldown rechecks probe an account already out of rotation; they are
+  // counted separately so they never colour the group users are served by.
+  const own=recent.filter(row=>!row.recheck);
+  const rechecks=new Set(recent.filter(row=>row.recheck).map(row=>row.batch_id||row.id)).size;
   const rounds=new Map();
   for(const row of own){
     const key=row.batch_id||row.id;
@@ -42,7 +46,7 @@ export function groupBoard(rows,{hours=24,now=Date.now()/1000}={}){
     return {...question,cells,passed,samples,rate:samples?passed/samples:null};
   });
   const latest=[...own].sort((a,b)=>b.slot-a.slot).find(row=>row.model);
-  return {strips,model:latest?.model||'',effort:latest?.effort||'',lastSlot:ordered.at(-1)?.slot??null,
+  return {strips,rechecks,model:latest?.model||'',effort:latest?.effort||'',lastSlot:ordered.at(-1)?.slot??null,
     firstSlot:ordered[0]?.slot??null,health:health(strips)};
 }
 

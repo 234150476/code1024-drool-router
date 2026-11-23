@@ -160,6 +160,7 @@ class PublicResults:
         groups={g['id']:g for g in self.projection()['groups']}
         if group_id not in groups: raise ConsoleError('分组不存在或未公开',404)
         rows=[];store=self.store
+        sources={}
         plans={p['id']:p['value'] for p in store.plans() if p['value']['published']}
         visible = {(r['job_id'], r['account_id']) for r in self.result_rows()} if include_accounts else None
         for row in self.result_rows(include_hidden=include_accounts):
@@ -171,6 +172,9 @@ class PublicResults:
             if not any(store.public_id('group','g'+str(g))==group_id for g in gids): continue
             raw=row['value']
             value={k:raw.get(k) for k in ('title','kind','status','model','effort','bank_version','duration','slot','finished_at','question_type')}
+            if row['job_id'] not in sources: sources[row['job_id']]=store.job(row['job_id'])['source']
+            # Cooldown rechecks test an account already taken out of scheduling.
+            value['recheck']=sources[row['job_id']]=='cooldown'
             value.update(id=store.public_id('record',row['id']),source='admin',batch_id=store.public_id('batch',row['job_id']),
                 content_available=raw['status'] != 'unavailable' and bool(
                     plan['show_artifacts'] if raw.get('question_type')=='drawing' or raw['kind']=='drawing' else plan['show_answers']))

@@ -75,6 +75,7 @@ function GroupCard({entry,onOpen,onHistory}){
     {board.strips.length?<>{board.strips.map(strip=><Strip key={strip.kind} strip={strip} name={group.name} onOpen={onOpen}/>)}
       <div className="ib-axis ib-mono"><span>{clock(board.firstSlot)}</span><span>最新</span></div></>
       :<p className="ib-none">这个时间范围内还没有巡检结果。</p>}
+    {board.rechecks>0&&<p className="ib-recheck">另有 {board.rechecks} 次已停用账号的冷却复测，未计入上面的色块和通过率。可在「全部记录」查看。</p>}
   </section>;
 }
 
