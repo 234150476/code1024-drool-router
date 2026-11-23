@@ -17,6 +17,13 @@ test('one cell per round and question, oldest first, user checks excluded',()=>{
   assert.equal(board.strips.find(s=>s.kind==='drawing').drawing,true);
 });
 
+test('rows hidden by quarantine stay off the board',()=>{
+  const rows=[row('a','r1',now-120,'numeric','pass'),row('h','r2',now-60,'numeric','fail',{hidden_from_results:true})];
+  const board=groupBoard(rows,{now});
+  assert.deepEqual(board.strips[0].cells.map(c=>c.status),['pass']);
+  assert.equal(board.health.label,'智力正常');
+});
+
 test('a retried round counts once and a confirmed wrong answer wins',()=>{
   const rows=[row('a','r1',now-60,'numeric','quota'),row('b','r1',now-60,'numeric','pass')];
   assert.deepEqual(groupBoard(rows,{now}).strips[0].cells.map(c=>c.status),['pass']);

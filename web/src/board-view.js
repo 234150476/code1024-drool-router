@@ -15,7 +15,9 @@ function merge(rows){
 
 export function groupBoard(rows,{hours=24,now=Date.now()/1000}={}){
   const since=now-hours*3600;
-  const own=rows.filter(row=>row.source!=='user'&&row.slot>=since);
+  // Admins also receive rows hidden by quarantine (e.g. rechecks of a paused
+  // account); the board shows what users see, 全部记录 keeps the full view.
+  const own=rows.filter(row=>row.source!=='user'&&!row.hidden_from_results&&row.slot>=since);
   const rounds=new Map();
   for(const row of own){
     const key=row.batch_id||row.id;
