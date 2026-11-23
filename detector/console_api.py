@@ -300,6 +300,10 @@ def admin(h, s, path, body, token, actor):
         if method == 'PUT' and not match[2]:
             fields(body, ['value', 'revision'])
             return h.send_json(save(s, body['value'], actor, match[1], body['revision']))
+        if method == 'DELETE' and not match[2]:
+            from .plan_deletion import delete_plan
+            fields(body, ['revision'])
+            return h.send_json(delete_plan(s, match[1], body['revision'], actor))
         if method == 'POST' and match[2]:
             fields(body, ['request_key'])
             s.sync_inventory(token, actor)

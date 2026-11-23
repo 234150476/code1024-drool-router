@@ -488,5 +488,12 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(self.call('/api/admin/inspections',token=USER)[0],403)
         self.assertEqual(self.call('/api/state',token=ADMIN)[0],404)
         self.assertEqual(self.call('/api/admin/isolations/1/release',{},ADMIN,'POST')[0],404)
+        current=self.service.store.plan(self.plan['id'])['revision']
+        self.assertEqual(self.call(path,{'revision':current},USER,'DELETE')[0],403)
+        self.assertEqual(self.call(path,{'revision':current+1},ADMIN,'DELETE')[0],409)
+        self.assertEqual(self.call(path,{},ADMIN,'DELETE')[0],400)
+        status,deleted,_=self.call(path,{'revision':current},ADMIN,'DELETE')
+        self.assertEqual(status,200);self.assertTrue(deleted['deleted'])
+        self.assertEqual(self.call(path,{'revision':current},ADMIN,'DELETE')[0],404)
 
 if __name__ == '__main__': unittest.main()

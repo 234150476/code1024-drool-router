@@ -135,3 +135,4 @@
 @media(pointer:coarse){
   .ir-result-toolbar .ir-tools button,.ir-viewer-head :is(button,select),.ir-results-info summary{min-height:40px}
 }
+.ir-app .ir-danger{margin-left:auto;color:#b3402f;border-color:#ecc9c4}.ir-app .ir-danger:hover{border-color:#b3402f}[data-theme=dark] .ir-app .ir-danger{color:#ffb4a6;border-color:#694048}
