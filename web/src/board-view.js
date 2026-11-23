@@ -28,7 +28,7 @@ export function groupBoard(rows,{hours=24,now=Date.now()/1000}={}){
     if(row.kind==='inspection'||questions.has(row.kind))continue;
     questions.set(row.kind,{kind:row.kind,title:row.title||row.kind,drawing:isDrawing(row)});
   }
-  const strips=[...questions.values()].map(question=>{
+  const strips=[...questions.values()].sort((a,b)=>a.drawing-b.drawing).map(question=>{
     const cells=ordered.map(round=>{
       const mine=round.rows.filter(row=>row.kind===question.kind);
       const empty=round.rows.find(row=>row.kind==='inspection');

@@ -4,7 +4,7 @@ import {request} from './console-client.js';
 import {endpoint} from './endpoints.js';
 import {batches,clock,isDrawing,selectedRecord,sourceName,verdict} from './inspection-view.js';
 
-export function ArtworkFrame({url}) {
+export function ArtworkFrame({url,thumbnail=false}) {
   const stage=useRef(null);
   const [scale,setScale]=useState(1);
   useLayoutEffect(()=>{
@@ -15,7 +15,7 @@ export function ArtworkFrame({url}) {
     observer.observe(stage.current);
     return()=>observer.disconnect();
   },[]);
-  return <div className="ir-artwork-stage" ref={stage}><iframe className="ir-artwork" title="鹈鹕骑车检测作品" sandbox="allow-scripts" referrerPolicy="no-referrer" src={endpoint(url)} style={{width:1200,height:750,transform:`translate(-50%,-50%) scale(${scale})`}}/></div>;
+  return <div className="ir-artwork-stage" ref={stage}><iframe className="ir-artwork" title="鹈鹕骑车检测作品" sandbox="allow-scripts" referrerPolicy="no-referrer" scrolling={thumbnail?'no':undefined} tabIndex={thumbnail?-1:undefined} src={endpoint(url)} style={{width:1200,height:750,transform:`translate(-50%,-50%) scale(${scale})`}}/></div>;
 }
 
 export function ResultBody({record,detail,loading=false,renderUrls=null,compact=false}) {

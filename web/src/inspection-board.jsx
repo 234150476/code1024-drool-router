@@ -43,7 +43,7 @@ function ArtworkCard({entry,admin,onOpen}){
   const [detail]=useRecord(entry.art,admin);
   const url=detail?.render_urls?.[0];
   return <button className="ib-art" onClick={()=>onOpen({name:entry.group.name,record:entry.art})} aria-label={'查看 '+entry.group.name+' 的作品'}>
-    <div className="ib-art-frame">{url?<ArtworkFrame url={url}/>:<span>正在加载作品…</span>}</div>
+    <div className="ib-art-frame">{url?<ArtworkFrame url={url} thumbnail/>:<span>正在加载作品…</span>}</div>
     <div className="ib-art-meta"><strong>{entry.group.name}</strong><span className="ib-mono">{entry.art.duration??'—'} s</span>
       <small className="ib-mono">{entry.art.model} · {clock(entry.art.slot)}</small></div>
   </button>;
@@ -100,7 +100,6 @@ export default function InspectionBoard({groups,stamp,admin=false,historyHours=2
   const total=overview(entries.filter(e=>e.loaded).map(e=>e.board)),gallery=entries.filter(e=>e.art);
   const windows=[[24,'24h'],...(historyHours>24?[[Math.min(72,historyHours),Math.min(72,historyHours)>=72?'3d':historyHours+'h']]:[])];
   return <div className="ib-board">
-    <div className="ib-toolbar"><div className="ib-range" role="group" aria-label="时间范围">{windows.map(([value,label])=><button key={value} aria-pressed={hours===value} className={hours===value?'active':''} onClick={()=>setHours(value)}>{label}</button>)}</div></div>
     {error&&<p className="ir-error" role="alert">{error}</p>}
     <div className="ib-stats">
       <div><span>标准答案题通过率 · 最近 {hours} 小时</span><strong className="ib-mono">{percent(total.rate)}</strong><small className="ib-mono">{total.passed}/{total.samples}</small></div>
@@ -108,7 +107,8 @@ export default function InspectionBoard({groups,stamp,admin=false,historyHours=2
       <div><span>最近一轮</span><strong className="ib-mono">{total.last?clock(total.last).slice(-5):'—'}</strong><small className="ib-mono">{total.last?clock(total.last).slice(0,5):'暂无'}</small></div>
     </div>
     {gallery.length>0&&<section className="ib-gallery-wrap"><h2>最新作品</h2><div className="ib-gallery">{gallery.map(e=><ArtworkCard key={e.group.id} entry={e} admin={admin} onOpen={setOpen}/>)}</div></section>}
-    <div className="ib-legend">{LEGEND.map(([tone,label])=><span key={tone}><i className={'ib-dot '+tone}/>{label}</span>)}</div>
+    <div className="ib-legend">{LEGEND.map(([tone,label])=><span key={tone}><i className={'ib-dot '+tone}/>{label}</span>)}
+      <div className="ib-range" role="group" aria-label="时间范围">{windows.map(([value,label])=><button key={value} aria-pressed={hours===value} className={hours===value?'active':''} onClick={()=>setHours(value)}>{label}</button>)}</div></div>
     {entries.map(e=>e.loaded?<GroupCard key={e.group.id} entry={e} onOpen={setOpen} onHistory={setFocus}/>:<section key={e.group.id} className="ib-card"><p className="ib-none">正在加载 {e.group.name}…</p></section>)}
     <p className="ib-foot">一格代表一轮巡检，点击查看那一轮的回答或作品。状态按最新一轮判断；请求失败不算答错。</p>
     <RecordDialog open={open} admin={admin} onClose={()=>setOpen(null)}/>
