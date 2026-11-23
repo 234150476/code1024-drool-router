@@ -159,6 +159,8 @@ class ConsoleStore:
         clean_accounts = []
         for account in accounts:
             group_ids = account.get('group_ids')
+            if group_ids is None:
+                group_ids = []
             if not isinstance(group_ids, list) or any(type(x) is not int for x in group_ids):
                 raise ConsoleError('账号分组信息不完整，保留原清单', 502)
             clean_accounts.append({'id': account['id'], 'name': str(account['name'])[:200],
