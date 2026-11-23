@@ -39,7 +39,11 @@ class PlanDeletionTests(unittest.TestCase):
         with self.assertRaises(ConsoleError) as error:
             store.job(job['id'])
         self.assertEqual(error.exception.status, 404)
-        self.assertEqual(self.service.public.history(store.public_id('group', 'g3')), [])
+        # The deleted group is no longer published at all.
+        with self.assertRaises(ConsoleError) as error:
+            self.service.public.history(store.public_id('group', 'g3'))
+        self.assertEqual(error.exception.status, 404)
+        self.service.public.history(store.public_id('group', 'g4'))
 
     def test_stale_revision_is_rejected(self):
         with self.assertRaises(ConsoleError) as error:
