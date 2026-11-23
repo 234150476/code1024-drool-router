@@ -3,7 +3,8 @@ import {Activity,ArrowLeft,Plus,RefreshCw,Settings2} from 'lucide-react';
 import {hostSession} from './access.js';
 import {request,loadSelfData} from './console-client.js';
 import {ThemeSwitch} from './workspace.jsx';
-import ResultViewer,{ResultBody} from './result-viewer.jsx';
+import {ResultBody} from './result-viewer.jsx';
+import InspectionBoard from './inspection-board.jsx';
 import ResultAccess from './result-access.jsx';
 import QuarantineAdmin,{QuarantinePolicy} from './quarantine-settings.jsx';
 import {defaultQuarantine,policyForQuestions} from './quarantine-policy.js';
@@ -134,12 +135,11 @@ function AdminSettings({onChange}){
 }
 
 export default function ConsoleApp(){
-  const [data,setData]=useState(null),[admin,setAdmin]=useState(false),[adminChecked,setAdminChecked]=useState(!hostSession()),[tab,setTab]=useState('scheduled'),[settings,setSettings]=useState(()=>new URLSearchParams(location.search).get('view')==='admin'),[groupId,setGroupId]=useState(''),[error,setError]=useState('');
+  const [data,setData]=useState(null),[admin,setAdmin]=useState(false),[adminChecked,setAdminChecked]=useState(!hostSession()),[tab,setTab]=useState('scheduled'),[settings,setSettings]=useState(()=>new URLSearchParams(location.search).get('view')==='admin'),[error,setError]=useState('');
   async function load(){try{setData(await request('/api/public/overview'));setError('');}catch(e){setData(null);setError(e.message);throw e;}}
   function openSettings(){setSettings(true);setError('');history.replaceState(null,'','?view=admin');}
   function closeSettings(){setSettings(false);history.replaceState(null,'',location.pathname);load().catch(e=>setError(e.message));}
   useEffect(()=>{if(!settings)load().catch(e=>setError(e.message));if(hostSession()){setAdminChecked(false);request('/api/admin/me').then(()=>setAdmin(true)).catch(()=>setAdmin(false)).finally(()=>setAdminChecked(true));}const timer=settings?null:setInterval(()=>load().catch(e=>setError(e.message)),30000);return()=>{if(timer)clearInterval(timer);};},[settings]);
-  const group=data?.groups.find(row=>row.id===groupId)||data?.groups[0];
   if(settings)return <main className="ir-app"><header className="ir-header"><div><div className="ir-brand"><Settings2 size={25}/><h1>巡检设置</h1></div><p>管理员配置分组、题目、模型与巡检时间。</p></div><div className="ir-actions"><ThemeSwitch/><button onClick={closeSettings}><ArrowLeft size={16}/>返回公开页</button></div></header>{!admin?<div className="ir-empty">{!adminChecked?'正在验证管理员身份…':hostSession()?'当前账号没有巡检设置权限，请返回结果页或使用管理员账号登录。':'仅管理员可以查看巡检设置，请先登录管理员账号。'}</div>:<><ResultAccess/><AdminSettings onChange={load}/></>}</main>;
   return <main className={'ir-app ir-console'+(tab==='scheduled'?' ir-inspection-results':'')}>
     <header className="ir-header">
@@ -148,7 +148,7 @@ export default function ConsoleApp(){
       <div className="ir-actions">{admin&&<button onClick={openSettings}><Settings2 size={16}/>巡检设置</button>}<ThemeSwitch/><button aria-label="刷新检测结果" onClick={()=>load().catch(e=>setError(e.message))}><RefreshCw size={17}/></button></div>
     </header>
     {error&&<p role="alert" className="ir-error">{error}</p>}
-    <div className="ir-scheduled-pane" hidden={tab!=='scheduled'}>{data?(group?<ResultViewer key={group.id} group={group} stamp={data.generated_at} admin={admin} historyHours={data.history_hours} groupControls={<div className="ir-groups" aria-label="检测分组">{data.groups.map(item=><button key={item.id} aria-pressed={group.id===item.id} className={group.id===item.id?'active':''} onClick={()=>setGroupId(item.id)}>{item.name}</button>)}</div>}/>:<div className="ir-empty">还没有已配置的分组巡检。</div>):<div className="ir-empty">{error?'暂时无法查看结果，请根据上方提示重新登录或重试。':'正在加载分组…'}</div>}</div>
+    <div className="ir-scheduled-pane" hidden={tab!=='scheduled'}>{data?(data.groups.length?<InspectionBoard groups={data.groups} stamp={data.generated_at} admin={admin} historyHours={data.history_hours}/>:<div className="ir-empty">还没有已配置的分组巡检。</div>):<div className="ir-empty">{error?'暂时无法查看结果，请根据上方提示重新登录或重试。':'正在加载分组…'}</div>}</div>
     {tab==='key'&&<KeyCheck/>}
   </main>;
 }

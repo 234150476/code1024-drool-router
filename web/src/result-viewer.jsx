@@ -4,7 +4,7 @@ import {request} from './console-client.js';
 import {endpoint} from './endpoints.js';
 import {batches,clock,isDrawing,selectedRecord,sourceName,verdict} from './inspection-view.js';
 
-function ArtworkFrame({url}) {
+export function ArtworkFrame({url}) {
   const stage=useRef(null);
   const [scale,setScale]=useState(1);
   useLayoutEffect(()=>{
